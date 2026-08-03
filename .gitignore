@@ -1,0 +1,7 @@
+# Only server/ and admin-web/ belong in this repository.
+
+/flutter/
+/portal/
+/docs/
+/.idea/
+*.log

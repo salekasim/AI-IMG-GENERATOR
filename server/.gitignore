@@ -1,0 +1,11 @@
+node_modules
+# Keep environment variables out of version control
+.env
+
+/generated/prisma
+# Build output
+dist
+# Runtime logs
+server.out.log
+server.err.log
+coverage

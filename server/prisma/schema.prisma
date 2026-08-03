@@ -1,0 +1,251 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+model User {
+  id           String        @id @default(cuid())
+  email        String        @unique
+  name         String?
+  avatarUrl    String?
+  passwordHash String? // only for email/password accounts
+  role         Role          @default(USER)
+  provider    String        @default("email") // email | google
+  dailyQuota  Int           @default(20)
+  banned      Boolean       @default(false)
+  createdAt   DateTime      @default(now())
+  lastLoginAt DateTime?
+  usage       UsageRecord[]
+  auditLogs   AuditLog[]
+  projects    Project[]     @relation("ProjectOwner")
+  generations Generation[]
+}
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  secretKey   String   @unique
+  ownerId     String
+  owner       User     @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workflows   Workflow[]
+  executions  WorkflowExecution[]
+}
+
+model AiProvider {
+  id           String        @id @default(cuid())
+  name         String        @unique // openai | stability | pollinations | fal ...
+  displayName  String
+  icon         String        @default("⚡")
+  baseUrl      String
+  chatEndpoint String?
+  imageEndpoint String?
+  embeddingEndpoint String?
+  speechEndpoint String?
+  visionEndpoint String?
+  apiKeyEnc    String? // AES-256-GCM encrypted; null = keyless (e.g. Pollinations)
+  organizationId String?
+  headers      Json          @default("{}")
+  queryParams  Json          @default("{}")
+  enabled      Boolean       @default(true)
+  priority     Int           @default(0)
+  weight       Int           @default(1)
+  timeoutMs    Int           @default(120000)
+  retryCount   Int           @default(3)
+  cooldownMs   Int           @default(30000)
+  costPer1kIn  Float         @default(0)
+  costPer1kOut Float         @default(0)
+  maxRpm       Int           @default(60)
+  maxTpm       Int           @default(100000)
+  dailyQuota   Int? // null = unlimited
+  monthlyQuota Int?
+  maxContext   Int?
+  maxOutput    Int?
+  supportsStreaming     Boolean @default(true)
+  supportsVision        Boolean @default(false)
+  supportsImages        Boolean @default(true)
+  supportsAudio         Boolean @default(false)
+  supportsFunctionCalling Boolean @default(true)
+  supportsJsonMode      Boolean @default(true)
+  healthStatus String    @default("unknown") // unknown | healthy | degraded | down
+  lastHealthCheck DateTime?
+  failureStreak Int      @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  usage        UsageRecord[]
+  models       AiModel[]
+  failoverRules RoutingRule[]
+}
+
+model AiModel {
+  id           String   @id @default(cuid())
+  providerId   String
+  provider     AiProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  displayName  String   // GPT-5
+  internalName String   // gpt-5
+  costPer1kIn  Float    @default(0)
+  costPer1kOut Float    @default(0)
+  priority     Int      @default(0)
+  weight       Int      @default(1)
+  maxTokens    Int?
+  temperatureLimit Float? @default(2)
+  supportsImages      Boolean @default(false)
+  supportsVision      Boolean @default(false)
+  supportsAudio       Boolean @default(false)
+  supportsToolCalls   Boolean @default(true)
+  supportsStreaming   Boolean @default(true)
+  supportsJson        Boolean @default(true)
+  supportsFunctionCalling Boolean @default(true)
+  supportsReasoning   Boolean @default(false)
+  enabled      Boolean  @default(true)
+  hidden       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  variableRoutes RoutingVariableRoute[]
+  failoverRules RoutingRule[]
+
+  @@unique([providerId, internalName])
+  @@index([enabled, hidden])
+}
+
+model RoutingVariable {
+  id          String   @id @default(cuid())
+  name        String   @unique // FAST | QUALITY | CHEAP ...
+  description String?
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  routes      RoutingVariableRoute[]
+}
+
+model RoutingVariableRoute {
+  id         String   @id @default(cuid())
+  variableId String
+  variable   RoutingVariable @relation(fields: [variableId], references: [id], onDelete: Cascade)
+  modelId    String
+  model      AiModel  @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  order      Int
+  createdAt  DateTime @default(now())
+
+  @@unique([variableId, modelId])
+}
+
+model RoutingRule {
+  id              String     @id @default(cuid())
+  name            String
+  enabled         Boolean    @default(true)
+  trigger         String     // provider_failed | quota_exceeded | latency_gt | balance_low | request_type | user_tier | image_request
+  condition       Json?      // { field, operator, value }
+  action          String     // switch_provider | switch_model | retry | failover | disable_provider | limit_rate
+  targetProviderId String?
+  targetProvider  AiProvider? @relation(fields: [targetProviderId], references: [id], onDelete: SetNull)
+  targetModelId   String?
+  targetModel     AiModel?    @relation(fields: [targetModelId], references: [id], onDelete: SetNull)
+  priority        Int        @default(0)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+}
+
+model UsageRecord {
+  id         String     @id @default(cuid())
+  userId     String
+  providerId String
+  prompt     String
+  imageCount Int
+  costUsd    Float      @default(0)
+  status     String     @default("success") // success | error | quota
+  createdAt  DateTime   @default(now())
+  user       User       @relation(fields: [userId], references: [id])
+  provider   AiProvider @relation(fields: [providerId], references: [id])
+}
+
+model Setting {
+  key   String @id
+  value Json
+}
+
+model Generation {
+  id            String   @id @default(cuid())
+  userId        String
+  prompt        String
+  negativePrompt String?
+  resolution    String   @default("medium")
+  ratio         String   @default("1:1")
+  model         String?
+  provider      String
+  sizeW         Int
+  sizeH         Int
+  imageCount    Int
+  status        String   @default("success") // success | error
+  images        Json     @default("[]") // array of base64 data URLs
+  costUsd       Float    @default(0)
+  error         String?
+  createdAt     DateTime @default(now())
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  detail    Json?
+  createdAt DateTime @default(now())
+  actor     User?    @relation(fields: [actorId], references: [id])
+}
+
+model Workflow {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  graph       Json
+  enabled     Boolean  @default(true)
+  version     Int      @default(1)
+  projectId   String?
+  project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  webhookUrl  String? // Discord / custom URL notified on client execution finish
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  executions  WorkflowExecution[]
+}
+
+model WorkflowExecution {
+  id         String   @id @default(cuid())
+  workflowId String
+  workflow   Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  projectId  String?
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  source     String   @default("admin") // admin | client
+  createdBy  String?  // user id that triggered the run
+  status     String   @default("pending") // pending | running | success | error
+  input      Json?
+  output     Json?
+  logs       Json     @default("[]")
+  attempts   Json     @default("[]") // per-node routing attempts: [{nodeId, provider, model, attempt, status, latencyMs, error, costUsd}]
+  tokensIn   Int      @default(0)
+  tokensOut  Int      @default(0)
+  images     Int      @default(0)
+  costUsd    Float    @default(0)
+  providerUsed String?
+  modelUsed    String?
+  durationMs Int      @default(0)
+  error      String?
+  startedAt  DateTime @default(now())
+  finishedAt DateTime?
+
+  @@index([workflowId, startedAt])
+  @@index([projectId, startedAt])
+}

@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: lumina-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: lumina
+      POSTGRES_PASSWORD: lumina_dev_password
+      POSTGRES_DB: lumina_ai
+    ports:
+      - "5433:5432"
+    volumes:
+      - lumina_pgdata:/var/lib/postgresql/data
+
+volumes:
+  lumina_pgdata:

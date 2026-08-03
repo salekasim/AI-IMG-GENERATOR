@@ -1,0 +1,420 @@
+import { Injectable, OnModuleInit } from '@nestjs/common';
+import { AiProvider } from '@prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
+
+interface ProviderSeed {
+  name: string;
+  displayName: string;
+  icon: string;
+  baseUrl: string;
+  chatEndpoint?: string;
+  imageEndpoint?: string;
+  embeddingEndpoint?: string;
+  speechEndpoint?: string;
+  visionEndpoint?: string;
+  organizationId?: string;
+  priority: number;
+  weight?: number;
+  timeoutMs?: number;
+  retryCount?: number;
+  cooldownMs?: number;
+  costPer1kIn?: number;
+  costPer1kOut?: number;
+  maxRpm?: number;
+  maxTpm?: number;
+  dailyQuota?: number;
+  monthlyQuota?: number;
+  maxContext?: number;
+  maxOutput?: number;
+  supportsStreaming?: boolean;
+  supportsVision?: boolean;
+  supportsImages?: boolean;
+  supportsAudio?: boolean;
+  supportsFunctionCalling?: boolean;
+  supportsJsonMode?: boolean;
+  supportsReasoning?: boolean;
+  enabled?: boolean;
+}
+
+interface ModelSeed {
+  provider: string;
+  displayName: string;
+  internalName: string;
+  costPer1kIn?: number;
+  costPer1kOut?: number;
+  priority?: number;
+  weight?: number;
+  maxTokens?: number;
+  temperatureLimit?: number;
+  supportsImages?: boolean;
+  supportsVision?: boolean;
+  supportsAudio?: boolean;
+  supportsToolCalls?: boolean;
+  supportsStreaming?: boolean;
+  supportsJson?: boolean;
+  supportsFunctionCalling?: boolean;
+  supportsReasoning?: boolean;
+  hidden?: boolean;
+}
+
+const PROVIDER_SEEDS: ProviderSeed[] = [
+  {
+    name: 'openai', displayName: 'OpenAI', icon: '⚡',
+    baseUrl: 'https://api.openai.com/v1',
+    chatEndpoint: '/chat/completions', imageEndpoint: '/images/generations',
+    embeddingEndpoint: '/embeddings', speechEndpoint: '/audio/speech', visionEndpoint: '/chat/completions',
+    priority: 1, weight: 100, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.0025, costPer1kOut: 0.01,
+    maxRpm: 60, maxTpm: 100000, maxContext: 128000, maxOutput: 16384,
+    supportsStreaming: true, supportsVision: true, supportsImages: true, supportsAudio: true,
+    supportsFunctionCalling: true, supportsJsonMode: true, enabled: false,
+  },
+  {
+    name: 'anthropic', displayName: 'Anthropic', icon: '✨',
+    baseUrl: 'https://api.anthropic.com/v1',
+    chatEndpoint: '/messages', visionEndpoint: '/messages',
+    priority: 2, weight: 90, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.003, costPer1kOut: 0.015,
+    maxRpm: 50, maxTpm: 100000, maxContext: 200000, maxOutput: 16384,
+    supportsStreaming: true, supportsVision: true, supportsFunctionCalling: true, supportsJsonMode: true,
+    supportsImages: false,
+    enabled: false,
+  },
+  {
+    name: 'google', displayName: 'Google Gemini', icon: '💫',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    chatEndpoint: '/models/{model}:generateContent', embeddingEndpoint: '/models/{model}:embedContent',
+    visionEndpoint: '/models/{model}:generateContent',
+    priority: 3, weight: 85, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.00125, costPer1kOut: 0.005,
+    maxRpm: 60, maxTpm: 250000, maxContext: 1000000, maxOutput: 8192,
+    supportsStreaming: true, supportsVision: true, supportsImages: true, supportsAudio: true,
+    supportsFunctionCalling: true, supportsJsonMode: true, enabled: false,
+  },
+  {
+    name: 'openrouter', displayName: 'OpenRouter', icon: '🧭',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    chatEndpoint: '/chat/completions', visionEndpoint: '/chat/completions',
+    priority: 4, weight: 70, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.0025, costPer1kOut: 0.01,
+    maxRpm: 60, maxTpm: 100000, maxContext: 200000, maxOutput: 32768,
+    supportsStreaming: true, supportsVision: true, supportsImages: true,
+    supportsFunctionCalling: true, supportsJsonMode: true, enabled: false,
+  },
+  {
+    name: 'groq', displayName: 'Groq', icon: '🏎️',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    chatEndpoint: '/chat/completions', speechEndpoint: '/audio/transcriptions', visionEndpoint: '/chat/completions',
+    priority: 5, weight: 80, timeoutMs: 45000, retryCount: 3, cooldownMs: 20000,
+    costPer1kIn: 0.0001, costPer1kOut: 0.0002,
+    maxRpm: 100, maxTpm: 6000, maxContext: 131072, maxOutput: 32768,
+    supportsStreaming: true, supportsVision: true, supportsAudio: true, supportsImages: false,
+    supportsFunctionCalling: true, supportsJsonMode: true, enabled: false,
+  },
+  {
+    name: 'deepseek', displayName: 'DeepSeek', icon: '🪷',
+    baseUrl: 'https://api.deepseek.com/v1',
+    chatEndpoint: '/chat/completions',
+    priority: 6, weight: 75, timeoutMs: 90000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.00027, costPer1kOut: 0.0011,
+    maxRpm: 30, maxTpm: 60000, maxContext: 65536, maxOutput: 8192,
+    supportsStreaming: true, supportsFunctionCalling: true, supportsJsonMode: true, supportsReasoning: true,
+    supportsImages: false,
+    enabled: false,
+  },
+  {
+    name: 'pollinations', displayName: 'Pollinations', icon: '🎨',
+    baseUrl: 'https://image.pollinations.ai',
+    imageEndpoint: '/prompt', visionEndpoint: 'https://text.pollinations.ai/',
+    priority: 7, weight: 60, timeoutMs: 120000, retryCount: 3, cooldownMs: 10000,
+    costPer1kIn: 0, costPer1kOut: 0,
+    maxRpm: 30, maxTpm: 5000, maxContext: 32768, maxOutput: 4096,
+    supportsStreaming: true, supportsVision: true, supportsImages: true, enabled: true,
+  },
+  {
+    name: 'stability', displayName: 'Stability AI', icon: '🖼️',
+    baseUrl: 'https://api.stability.ai',
+    imageEndpoint: '/v2beta/stable-image/generate/core',
+    priority: 8, weight: 50, timeoutMs: 90000, retryCount: 2, cooldownMs: 30000,
+    costPer1kIn: 0, costPer1kOut: 0,
+    maxRpm: 30, maxTpm: 10000, supportsImages: true, enabled: false,
+  },
+  {
+    name: 'together', displayName: 'Together', icon: '🫂',
+    baseUrl: 'https://api.together.xyz/v1',
+    chatEndpoint: '/chat/completions', visionEndpoint: '/chat/completions',
+    priority: 9, weight: 55, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.0008, costPer1kOut: 0.0008,
+    maxRpm: 60, maxTpm: 20000, maxContext: 131072, maxOutput: 8192,
+    supportsStreaming: true, supportsVision: true, supportsImages: true,
+    supportsFunctionCalling: true, supportsJsonMode: true, enabled: false,
+  },
+  {
+    name: 'xai', displayName: 'xAI', icon: '𝕏',
+    baseUrl: 'https://api.x.ai/v1',
+    chatEndpoint: '/chat/completions', visionEndpoint: '/chat/completions',
+    priority: 10, weight: 50, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.003, costPer1kOut: 0.015,
+    maxRpm: 60, maxTpm: 100000, maxContext: 131072, maxOutput: 16384,
+    supportsStreaming: true, supportsVision: true, supportsFunctionCalling: true, supportsJsonMode: true,
+    supportsImages: false,
+    enabled: false,
+  },
+  {
+    name: 'azure', displayName: 'Azure OpenAI', icon: '☁️',
+    baseUrl: 'https://{resource}.openai.azure.com/openai/deployments',
+    chatEndpoint: '/{deployment}/chat/completions?api-version=2024-06-01',
+    imageEndpoint: '/{deployment}/images/generations?api-version=2024-06-01',
+    embeddingEndpoint: '/{deployment}/embeddings?api-version=2024-06-01',
+    priority: 11, weight: 45, timeoutMs: 90000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.0025, costPer1kOut: 0.01,
+    maxRpm: 60, maxTpm: 100000, maxContext: 128000, maxOutput: 16384,
+    supportsStreaming: true, supportsVision: true, supportsFunctionCalling: true, supportsJsonMode: true,
+    supportsImages: false,
+    enabled: false,
+  },
+  {
+    name: 'mistral', displayName: 'Mistral', icon: '🌀',
+    baseUrl: 'https://api.mistral.ai/v1',
+    chatEndpoint: '/chat/completions', embeddingEndpoint: '/embeddings',
+    priority: 12, weight: 45, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.0009, costPer1kOut: 0.0009,
+    maxRpm: 60, maxTpm: 20000, maxContext: 131072, maxOutput: 32768,
+    supportsStreaming: true, supportsFunctionCalling: true, supportsJsonMode: true, supportsImages: false,
+    enabled: false,
+  },
+  {
+    name: 'fireworks', displayName: 'Fireworks', icon: '🧨',
+    baseUrl: 'https://api.fireworks.ai/inference/v1',
+    chatEndpoint: '/chat/completions',
+    priority: 13, weight: 40, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.0002, costPer1kOut: 0.0002,
+    maxRpm: 60, maxTpm: 10000, maxContext: 32768, maxOutput: 8192,
+    supportsStreaming: true, supportsFunctionCalling: true, supportsJsonMode: true, enabled: false,
+  },
+  {
+    name: 'replicate', displayName: 'Replicate', icon: '♻️',
+    baseUrl: 'https://api.replicate.com/v1',
+    imageEndpoint: '/predictions',
+    priority: 14, weight: 40, timeoutMs: 120000, retryCount: 2, cooldownMs: 30000,
+    costPer1kIn: 0, costPer1kOut: 0,
+    maxRpm: 30, maxTpm: 10000, supportsImages: true, supportsAudio: true, enabled: false,
+  },
+  {
+    name: 'cohere', displayName: 'Cohere', icon: '🌊',
+    baseUrl: 'https://api.cohere.com/v1',
+    chatEndpoint: '/chat', embeddingEndpoint: '/embed',
+    priority: 15, weight: 35, timeoutMs: 60000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.00025, costPer1kOut: 0.00125,
+    maxRpm: 60, maxTpm: 20000, maxContext: 32768, maxOutput: 8192,
+    supportsStreaming: true, supportsFunctionCalling: true, supportsJsonMode: true, supportsImages: false,
+    enabled: false,
+  },
+  {
+    name: 'perplexity', displayName: 'Perplexity', icon: '🔎',
+    baseUrl: 'https://api.perplexity.ai',
+    chatEndpoint: '/chat/completions',
+    priority: 16, weight: 30, timeoutMs: 90000, retryCount: 3, cooldownMs: 30000,
+    costPer1kIn: 0.002, costPer1kOut: 0.002,
+    maxRpm: 60, maxTpm: 20000, maxContext: 131072, maxOutput: 16384,
+    supportsStreaming: true, supportsFunctionCalling: true, supportsJsonMode: true, supportsImages: false,
+    enabled: false,
+  },
+];
+
+const MODEL_SEEDS: ModelSeed[] = [
+  { provider: 'openai', displayName: 'GPT-5', internalName: 'gpt-5', costPer1kIn: 0.0025, costPer1kOut: 0.01, priority: 1, maxTokens: 16384, temperatureLimit: 2, supportsVision: true, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true, supportsReasoning: true },
+  { provider: 'openai', displayName: 'GPT-4.1', internalName: 'gpt-4.1', costPer1kIn: 0.002, costPer1kOut: 0.008, priority: 2, maxTokens: 32768, temperatureLimit: 2, supportsVision: true, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true },
+  { provider: 'anthropic', displayName: 'Claude Sonnet', internalName: 'claude-sonnet-4-20250514', costPer1kIn: 0.003, costPer1kOut: 0.015, priority: 1, maxTokens: 16384, temperatureLimit: 1, supportsVision: true, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true },
+  { provider: 'anthropic', displayName: 'Claude Opus', internalName: 'claude-opus-4-20250514', costPer1kIn: 0.015, costPer1kOut: 0.075, priority: 2, maxTokens: 16384, temperatureLimit: 1, supportsVision: true, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true, supportsReasoning: true },
+  { provider: 'google', displayName: 'Gemini Pro', internalName: 'gemini-2.5-pro', costPer1kIn: 0.00125, costPer1kOut: 0.01, priority: 1, maxTokens: 8192, temperatureLimit: 2, supportsVision: true, supportsImages: true, supportsAudio: true, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true, supportsReasoning: true },
+  { provider: 'google', displayName: 'Gemini Flash', internalName: 'gemini-2.5-flash', costPer1kIn: 0.0003, costPer1kOut: 0.0025, priority: 2, maxTokens: 8192, temperatureLimit: 2, supportsVision: true, supportsImages: true, supportsAudio: true, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true, supportsReasoning: true },
+  { provider: 'deepseek', displayName: 'DeepSeek Chat', internalName: 'deepseek-chat', costPer1kIn: 0.00027, costPer1kOut: 0.0011, priority: 1, maxTokens: 8192, temperatureLimit: 2, supportsToolCalls: true, supportsStreaming: true, supportsJson: true, supportsFunctionCalling: true },
+  { provider: 'deepseek', displayName: 'DeepSeek Reasoner', internalName: 'deepseek-reasoner', costPer1kIn: 0.00055, costPer1kOut: 0.00219, priority: 2, maxTokens: 8192, temperatureLimit: 2, supportsToolCalls: true, supportsStreaming: true, supportsReasoning: true },
+  { provider: 'pollinations', displayName: 'Flux Dev', internalName: 'flux', costPer1kIn: 0, costPer1kOut: 0, priority: 1, supportsImages: true },
+  { provider: 'pollinations', displayName: 'Flux Schnell', internalName: 'turbo', costPer1kIn: 0, costPer1kOut: 0, priority: 2, supportsImages: true },
+];
+
+const VARIABLE_SEEDS: Array<{ name: string; description: string }> = [
+  { name: 'FAST', description: 'Lowest latency — flash models first' },
+  { name: 'NORMAL', description: 'Default balanced routing' },
+  { name: 'BALANCED', description: 'Latency/cost/quality balanced chain' },
+  { name: 'SMART', description: 'Context-aware automatic selection' },
+  { name: 'QUALITY', description: 'Highest quality models first' },
+  { name: 'CHEAP', description: 'Lowest cost models first' },
+  { name: 'PREMIUM', description: 'Top-tier models for premium users' },
+  { name: 'REASONING', description: 'Reasoning-capable models only' },
+  { name: 'IMAGE_FAST', description: 'Fast image generation chain' },
+  { name: 'IMAGE_HD', description: 'High-detail image chain' },
+  { name: 'IMAGE_ULTRA', description: 'Maximum quality image chain' },
+  { name: 'VISION', description: 'Vision-capable models only' },
+  { name: 'CODING', description: 'Best coding models' },
+  { name: 'TRANSLATION', description: 'Translation-optimized models' },
+  { name: 'SUMMARY', description: 'Summarization-optimized models' },
+];
+
+@Injectable()
+export class ProvidersService implements OnModuleInit {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async onModuleInit() {
+    await this.ensureDefaults();
+  }
+
+  private async ensureDefaults() {
+    for (const seed of PROVIDER_SEEDS) {
+      await this.prisma.aiProvider.upsert({
+        where: { name: seed.name },
+        update: {
+          displayName: seed.displayName,
+          icon: seed.icon,
+          baseUrl: seed.baseUrl,
+          chatEndpoint: seed.chatEndpoint ?? null,
+          imageEndpoint: seed.imageEndpoint ?? null,
+          embeddingEndpoint: seed.embeddingEndpoint ?? null,
+          speechEndpoint: seed.speechEndpoint ?? null,
+          visionEndpoint: seed.visionEndpoint ?? null,
+          priority: seed.priority ?? 0,
+          weight: seed.weight ?? 1,
+          timeoutMs: seed.timeoutMs ?? 120000,
+          retryCount: seed.retryCount ?? 3,
+          cooldownMs: seed.cooldownMs ?? 30000,
+          costPer1kIn: seed.costPer1kIn ?? 0,
+          costPer1kOut: seed.costPer1kOut ?? 0,
+          maxRpm: seed.maxRpm ?? 60,
+          maxTpm: seed.maxTpm ?? 100000,
+          maxContext: seed.maxContext ?? null,
+          maxOutput: seed.maxOutput ?? null,
+          supportsStreaming: seed.supportsStreaming ?? true,
+          supportsVision: seed.supportsVision ?? false,
+          supportsImages: seed.supportsImages ?? true,
+          supportsAudio: seed.supportsAudio ?? false,
+          supportsFunctionCalling: seed.supportsFunctionCalling ?? true,
+          supportsJsonMode: seed.supportsJsonMode ?? true,
+        },
+        create: {
+          name: seed.name,
+          displayName: seed.displayName,
+          icon: seed.icon,
+          baseUrl: seed.baseUrl,
+          chatEndpoint: seed.chatEndpoint ?? null,
+          imageEndpoint: seed.imageEndpoint ?? null,
+          embeddingEndpoint: seed.embeddingEndpoint ?? null,
+          speechEndpoint: seed.speechEndpoint ?? null,
+          visionEndpoint: seed.visionEndpoint ?? null,
+          organizationId: seed.organizationId ?? null,
+          priority: seed.priority ?? 0,
+          weight: seed.weight ?? 1,
+          timeoutMs: seed.timeoutMs ?? 120000,
+          retryCount: seed.retryCount ?? 3,
+          cooldownMs: seed.cooldownMs ?? 30000,
+          costPer1kIn: seed.costPer1kIn ?? 0,
+          costPer1kOut: seed.costPer1kOut ?? 0,
+          maxRpm: seed.maxRpm ?? 60,
+          maxTpm: seed.maxTpm ?? 100000,
+          dailyQuota: seed.dailyQuota ?? null,
+          monthlyQuota: seed.monthlyQuota ?? null,
+          maxContext: seed.maxContext ?? null,
+          maxOutput: seed.maxOutput ?? null,
+          supportsStreaming: seed.supportsStreaming ?? true,
+          supportsVision: seed.supportsVision ?? false,
+          supportsImages: seed.supportsImages ?? true,
+          supportsAudio: seed.supportsAudio ?? false,
+          supportsFunctionCalling: seed.supportsFunctionCalling ?? true,
+          supportsJsonMode: seed.supportsJsonMode ?? true,
+          enabled: seed.enabled ?? true,
+          healthStatus: 'unknown',
+          failureStreak: 0,
+        },
+      });
+    }
+    for (const seed of MODEL_SEEDS) {
+      const provider = await this.prisma.aiProvider.findUnique({
+        where: { name: seed.provider },
+      });
+      if (!provider) continue;
+      await this.prisma.aiModel.upsert({
+        where: {
+          providerId_internalName: {
+            providerId: provider.id,
+            internalName: seed.internalName,
+          },
+        },
+        update: {},
+        create: {
+          providerId: provider.id,
+          displayName: seed.displayName,
+          internalName: seed.internalName,
+          costPer1kIn: seed.costPer1kIn ?? 0,
+          costPer1kOut: seed.costPer1kOut ?? 0,
+          priority: seed.priority ?? 0,
+          weight: seed.weight ?? 1,
+          maxTokens: seed.maxTokens ?? null,
+          temperatureLimit: seed.temperatureLimit ?? 2,
+          supportsImages: seed.supportsImages ?? false,
+          supportsVision: seed.supportsVision ?? false,
+          supportsAudio: seed.supportsAudio ?? false,
+          supportsToolCalls: seed.supportsToolCalls ?? true,
+          supportsStreaming: seed.supportsStreaming ?? true,
+          supportsJson: seed.supportsJson ?? true,
+          supportsFunctionCalling: seed.supportsFunctionCalling ?? true,
+          supportsReasoning: seed.supportsReasoning ?? false,
+          enabled: true,
+          hidden: false,
+        },
+      });
+    }
+    for (const seed of VARIABLE_SEEDS) {
+      await this.prisma.routingVariable.upsert({
+        where: { name: seed.name },
+        update: { description: seed.description },
+        create: { name: seed.name, description: seed.description, enabled: true },
+      });
+    }
+  }
+
+  listEnabled(): Promise<AiProvider[]> {
+    return this.prisma.aiProvider.findMany({
+      where: { enabled: true },
+      orderBy: { priority: 'asc' },
+    });
+  }
+
+  findByName(name: string): Promise<AiProvider | null> {
+    return this.prisma.aiProvider.findUnique({ where: { name } });
+  }
+
+  /** Public-facing picker list: no apiKeyEnc, no baseUrl internals. */
+  async listForPicker() {
+    const providers = await this.prisma.aiProvider.findMany({
+      where: { enabled: true },
+      orderBy: { priority: 'asc' },
+      select: {
+        name: true,
+        displayName: true,
+        priority: true,
+        models: {
+          where: { enabled: true, hidden: false },
+          orderBy: { priority: 'asc' },
+          select: {
+            displayName: true,
+            internalName: true,
+            supportsImages: true,
+            supportsVision: true,
+          },
+        },
+      },
+    });
+    return providers.map((p) => ({
+      provider: p.name,
+      displayName: p.displayName,
+      models: p.models.map((m) => ({
+        name: m.internalName,
+        label: m.displayName,
+        maxImages: m.supportsImages ? 4 : 1,
+        supportsImages: m.supportsImages,
+        supportsVision: m.supportsVision,
+      })),
+    }));
+  }
+}

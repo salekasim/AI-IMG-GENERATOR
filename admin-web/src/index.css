@@ -1,0 +1,158 @@
+@import "@xyflow/react/dist/style.css";
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #07090d;
+  --color-surface: #0d1119;
+  --color-elevated: #131926;
+  --color-line: #1c2433;
+  --color-line-soft: #161d29;
+  --color-blue: #3b82f6;
+  --color-cyan: #22d3ee;
+  --color-emerald: #10b981;
+  --color-amber: #f59e0b;
+  --color-red: #f4686c;
+  --color-inktext: #eef2f8;
+  --color-muted: #8b96ab;
+  --color-faint: #5b667c;
+  --radius-xl: 1rem;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-ink);
+  color: var(--color-inktext);
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.011em;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.35);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-line);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-faint);
+}
+
+/* ── Premium utilities ─────────────────────────────── */
+.glass {
+  background: rgba(13, 17, 25, 0.66);
+  backdrop-filter: blur(16px) saturate(150%);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+}
+
+.glass-strong {
+  background: rgba(13, 17, 25, 0.85);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+}
+
+.text-gradient {
+  background: linear-gradient(120deg, #60a5fa, #22d3ee 55%, #34d399);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.ring-glow {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.4), 0 0 24px rgba(59, 130, 246, 0.25);
+}
+
+@keyframes glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 14px rgba(16, 185, 129, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 4px rgba(16, 185, 129, 0.2);
+  }
+}
+.live-dot {
+  animation: glow-pulse 2.4s ease-in-out infinite;
+}
+
+/* ── React Flow overrides for the orchestrator canvas ── */
+.react-flow {
+  background:
+    radial-gradient(1100px 640px at 28% 8%, rgba(59, 130, 246, 0.06), transparent 60%),
+    radial-gradient(900px 560px at 82% 92%, rgba(34, 211, 238, 0.05), transparent 55%),
+    var(--color-ink);
+}
+.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--color-surface);
+  background: var(--color-cyan);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+.react-flow__handle:hover {
+  background: var(--color-emerald);
+  transform: scale(1.25);
+}
+.react-flow__edge-path {
+  stroke-width: 2;
+}
+.react-flow__connection-path {
+  stroke: var(--color-cyan);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+.react-flow__controls {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.react-flow__controls-button {
+  background: var(--color-surface) !important;
+  border-bottom: 1px solid var(--color-line) !important;
+  color: var(--color-muted) !important;
+  width: 30px;
+  height: 30px;
+}
+.react-flow__controls-button:hover {
+  background: var(--color-elevated) !important;
+  color: var(--color-inktext) !important;
+}
+.react-flow__minimap {
+  border-radius: 12px;
+  border: 1px solid var(--color-line);
+  overflow: hidden;
+  background: var(--color-surface) !important;
+}
+.react-flow__minimap-mask {
+  fill: rgba(7, 9, 13, 0.72);
+}
+.react-flow__minimap-node {
+  fill: var(--color-blue);
+}
+.react-flow__node.selected .orchestrator-node {
+  border-color: var(--color-cyan);
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18), 0 14px 34px rgba(0, 0, 0, 0.5);
+}
+.react-flow__edge.animated path {
+  stroke-dasharray: 6 4;
+  animation: dashdraw 0.8s linear infinite;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-cyan) !important;
+}
+@keyframes dashdraw {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
