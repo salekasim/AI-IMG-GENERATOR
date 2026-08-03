@@ -11,9 +11,12 @@ export class ClientService {
   ) {}
 
   async resolveProject(secretKey: string): Promise<Project> {
-    const project = await this.prisma.project.findUnique({ where: { secretKey } });
+    const project = await this.prisma.project.findUnique({
+      where: { secretKey },
+    });
     if (!project) throw new UnauthorizedException('Invalid project key');
-    if (!project.enabled) throw new UnauthorizedException('Project is disabled');
+    if (!project.enabled)
+      throw new UnauthorizedException('Project is disabled');
     return project;
   }
 
@@ -23,7 +26,7 @@ export class ClientService {
 
   verifyStreamToken(token: string, projectId: string): boolean {
     try {
-      const payload = this.jwt.verify(token) as { scope?: string; projectId?: string };
+      const payload = this.jwt.verify(token);
       return payload.scope === 'client' && payload.projectId === projectId;
     } catch {
       return false;

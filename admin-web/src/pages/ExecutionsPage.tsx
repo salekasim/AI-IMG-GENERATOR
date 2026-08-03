@@ -40,6 +40,7 @@ export default function ExecutionsPage() {
   const [offset, setOffset] = useState(0);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [retryTarget, setRetryTarget] = useState<AdminExecutionRow | null>(null);
+  const [retryError, setRetryError] = useState('');
   const PAGE = 30;
 
   const { data: workflows } = useQuery({
@@ -83,10 +84,11 @@ export default function ExecutionsPage() {
     mutationFn: (id: string) => retryAdminExecution(id),
     onSuccess: (started) => {
       setRetryTarget(null);
+      setRetryError('');
       queryClient.invalidateQueries({ queryKey: ['admin', 'executions'] });
       setDetailId(started.id);
     },
-    onError: (err) => alert(errorMessage(err)),
+    onError: (err) => setRetryError(errorMessage(err)),
   });
 
   const rows = data?.rows ?? [];
@@ -187,6 +189,11 @@ export default function ExecutionsPage() {
         </span>
       </div>
 
+      {retryError && (
+        <div className="rounded-lg border border-red-900/60 bg-red-950/40 px-3 py-2 text-sm text-red-400">
+          {retryError}
+        </div>
+      )}
       {error && (
         <div className="rounded-lg border border-red/30 bg-red/10 px-3 py-2 text-sm text-red">
           Failed to load executions: {errorMessage(error)}

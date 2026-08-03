@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
+import { UsersModule } from '../users/users.module';
 import { CryptoService } from '../common/crypto.service';
 import { FireworksAdapter } from '../generation/adapters/fireworks.adapter';
 import { GeminiAdapter } from '../generation/adapters/gemini.adapter';
@@ -23,9 +25,13 @@ import { WorkflowService } from './workflow.service';
 @Module({
   imports: [
     PrismaModule,
-    JwtModule.register({
-      secret: process.env.JWT_SECRET ?? 'dev-secret',
-      signOptions: { expiresIn: '1d' },
+    UsersModule,
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.getOrThrow<string>('JWT_SECRET'),
+        signOptions: { expiresIn: '1d' },
+      }),
     }),
   ],
   controllers: [WorkflowController, ExecutionController],

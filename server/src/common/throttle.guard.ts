@@ -29,7 +29,11 @@ export class ThrottleGuard implements CanActivate {
         ? `u:${request.user?.userId ?? request.user?.id ?? 'anon'}`
         : `ip:${request.ip ?? request.socket?.remoteAddress ?? '?'}`;
 
-    const result = this.rateLimit.consume(identity, options.limit, options.windowMs);
+    const result = this.rateLimit.consume(
+      identity,
+      options.limit,
+      options.windowMs,
+    );
     if (!result.allowed) {
       context
         .switchToHttp()

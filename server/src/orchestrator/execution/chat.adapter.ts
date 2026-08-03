@@ -32,7 +32,15 @@ const BASE_URLS: Record<string, string> = {
 };
 
 const POLLINATIONS_MODELS = [
-  'openai', 'mistral', 'claude', 'llama', 'gemini', 'deepseek', 'qwen', 'kimi', 'command-r',
+  'openai',
+  'mistral',
+  'claude',
+  'llama',
+  'gemini',
+  'deepseek',
+  'qwen',
+  'kimi',
+  'command-r',
 ];
 
 // Pollinations free tier is IP-throttled and occasionally returns transient
@@ -42,7 +50,10 @@ const MAX_ATTEMPTS = 3;
 const BACKOFF_MS = [1000, 2500];
 
 class UpstreamError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
     super(message);
     this.name = 'UpstreamError';
   }
@@ -65,7 +76,13 @@ function modelForPollinations(model: string): string {
   const id = model.trim().toLowerCase();
   if (POLLINATIONS_MODELS.includes(id)) return id;
   if (id.includes('flash') || id.includes('gemini')) return 'gemini';
-  if (id.includes('claude') || id.includes('sonnet') || id.includes('opus') || id.includes('haiku')) return 'claude';
+  if (
+    id.includes('claude') ||
+    id.includes('sonnet') ||
+    id.includes('opus') ||
+    id.includes('haiku')
+  )
+    return 'claude';
   if (id.includes('llama')) return 'llama';
   if (id.includes('deepseek')) return 'deepseek';
   if (id.includes('qwen')) return 'qwen';
@@ -73,7 +90,8 @@ function modelForPollinations(model: string): string {
   return 'openai';
 }
 
-const estimateTokens = (text: string): number => Math.max(1, Math.ceil(text.length / 4));
+const estimateTokens = (text: string): number =>
+  Math.max(1, Math.ceil(text.length / 4));
 
 @Injectable()
 export class ChatAdapter {
@@ -87,7 +105,9 @@ export class ChatAdapter {
 
     const baseUrl = BASE_URLS[provider];
     if (!baseUrl) {
-      throw new Error(`Chat provider '${options.provider}' is not supported by the M2 executor`);
+      throw new Error(
+        `Chat provider '${options.provider}' is not supported by the M2 executor`,
+      );
     }
 
     const apiKey = options.apiKey?.trim() || null;
@@ -98,7 +118,9 @@ export class ChatAdapter {
     }
 
     const model =
-      provider === 'pollinations' ? modelForPollinations(options.model) : options.model.trim() || undefined;
+      provider === 'pollinations'
+        ? modelForPollinations(options.model)
+        : options.model.trim() || undefined;
 
     const body: Record<string, unknown> = {
       model,
@@ -115,7 +137,8 @@ export class ChatAdapter {
       } catch (error) {
         lastError = error;
         const retryable =
-          (error instanceof UpstreamError && RETRYABLE_STATUS.has(error.status)) ||
+          (error instanceof UpstreamError &&
+            RETRYABLE_STATUS.has(error.status)) ||
           error instanceof UpstreamTimeout;
         if (!retryable || attempt >= attempts) throw error;
         await sleep(BACKOFF_MS[attempt - 1] ?? 3000);
@@ -160,7 +183,8 @@ export class ChatAdapter {
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
       const text = data.choices?.[0]?.message?.content?.trim() ?? '';
-      const tokensIn = data.usage?.prompt_tokens ?? estimateTokens(options.prompt);
+      const tokensIn =
+        data.usage?.prompt_tokens ?? estimateTokens(options.prompt);
       const tokensOut = data.usage?.completion_tokens ?? estimateTokens(text);
 
       return {
@@ -172,7 +196,9 @@ export class ChatAdapter {
       };
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        throw new UpstreamTimeout(`Chat ${provider}/${model} timed out after 30s`);
+        throw new UpstreamTimeout(
+          `Chat ${provider}/${model} timed out after 30s`,
+        );
       }
       throw error;
     } finally {

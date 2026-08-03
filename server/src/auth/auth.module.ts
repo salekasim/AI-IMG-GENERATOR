@@ -17,7 +17,7 @@ import type { JwtModuleOptions } from '@nestjs/jwt';
       useFactory: (config: ConfigService): JwtModuleOptions => {
         const expiresIn = config.get<string>('JWT_EXPIRES_IN') ?? '1d';
         return {
-          secret: config.get<string>('JWT_SECRET') ?? 'dev-secret',
+          secret: config.getOrThrow<string>('JWT_SECRET'),
           signOptions: {
             expiresIn: expiresIn as NonNullable<
               JwtModuleOptions['signOptions']

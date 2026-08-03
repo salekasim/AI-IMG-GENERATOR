@@ -53,7 +53,11 @@ export interface RoutingEvent {
 
 export interface RoutingSink {
   emit(event: RoutingEvent): void;
-  log(level: 'info' | 'warn' | 'error' | 'success' | 'api', source: string, message: string): void;
+  log(
+    level: 'info' | 'warn' | 'error' | 'success' | 'api',
+    source: string,
+    message: string,
+  ): void;
 }
 
 export interface RoutingContext {
@@ -84,7 +88,10 @@ export class RoutingService {
 
   private isInCooldown(row: AiProvider, fallbackCooldownMs: number): boolean {
     if (!row.failureStreak || !row.lastHealthCheck) return false;
-    return Date.now() - row.lastHealthCheck.getTime() < (row.cooldownMs || fallbackCooldownMs);
+    return (
+      Date.now() - row.lastHealthCheck.getTime() <
+      (row.cooldownMs || fallbackCooldownMs)
+    );
   }
 
   /** Resolve a variable name to its ordered model fallback chain. */
@@ -105,24 +112,40 @@ export class RoutingService {
     }));
   }
 
-  private async quotaFor(row: AiProvider): Promise<{ exceeded: boolean; reason?: string }> {
+  private async quotaFor(
+    row: AiProvider,
+  ): Promise<{ exceeded: boolean; reason?: string }> {
     if (row.dailyQuota || row.monthlyQuota) {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
-      const startOfMonth = new Date(startOfDay.getFullYear(), startOfDay.getMonth(), 1);
+      const startOfMonth = new Date(
+        startOfDay.getFullYear(),
+        startOfDay.getMonth(),
+        1,
+      );
       const [todayCount, monthCount] = await Promise.all([
         row.dailyQuota
-          ? this.prisma.usageRecord.count({ where: { providerId: row.id, createdAt: { gte: startOfDay } } })
+          ? this.prisma.usageRecord.count({
+              where: { providerId: row.id, createdAt: { gte: startOfDay } },
+            })
           : Promise.resolve(0),
         row.monthlyQuota
-          ? this.prisma.usageRecord.count({ where: { providerId: row.id, createdAt: { gte: startOfMonth } } })
+          ? this.prisma.usageRecord.count({
+              where: { providerId: row.id, createdAt: { gte: startOfMonth } },
+            })
           : Promise.resolve(0),
       ]);
       if (row.dailyQuota && todayCount >= row.dailyQuota) {
-        return { exceeded: true, reason: `daily quota exhausted (${todayCount}/${row.dailyQuota})` };
+        return {
+          exceeded: true,
+          reason: `daily quota exhausted (${todayCount}/${row.dailyQuota})`,
+        };
       }
       if (row.monthlyQuota && monthCount >= row.monthlyQuota) {
-        return { exceeded: true, reason: `monthly quota exhausted (${monthCount}/${row.monthlyQuota})` };
+        return {
+          exceeded: true,
+          reason: `monthly quota exhausted (${monthCount}/${row.monthlyQuota})`,
+        };
       }
     }
     return { exceeded: false };
@@ -143,7 +166,10 @@ export class RoutingService {
     const attempts: RoutingAttempt[] = [];
     const lastError: string[] = [];
     const steps: ChainStep[] = [...req.chain];
-    const fallbackCooldownMs = await this.config.getNumber('provider.cooldownMs', COOLDOWN_MS);
+    const fallbackCooldownMs = await this.config.getNumber(
+      'provider.cooldownMs',
+      COOLDOWN_MS,
+    );
     let i = 0;
 
     while (i < steps.length) {
@@ -151,41 +177,147 @@ export class RoutingService {
       const attemptNumber = attempts.length + 1;
       const rowName = this.aliasFor(step.provider);
 
-      const row = await this.prisma.aiProvider.findUnique({ where: { name: rowName } });
+      const row = await this.prisma.aiProvider.findUnique({
+        where: { name: rowName },
+      });
       if (!row || !row.enabled) {
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'skipped', 0, `provider '${rowName}' is missing or disabled`));
-        sink.emit({ nodeId: req.nodeId, status: 'skipped', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs: 0, message: `skipped — provider disabled` });
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'skipped',
+            0,
+            `provider '${rowName}' is missing or disabled`,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'skipped',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs: 0,
+          message: `skipped — provider disabled`,
+        });
         sink.log('warn', rowName, `↷ skipped (disabled) — ${step.model}`);
         i += 1;
         continue;
       }
       if (row.healthStatus === 'down') {
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'skipped', 0, `provider '${rowName}' is marked down`));
-        sink.emit({ nodeId: req.nodeId, status: 'skipped', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs: 0, message: `skipped — provider down` });
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'skipped',
+            0,
+            `provider '${rowName}' is marked down`,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'skipped',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs: 0,
+          message: `skipped — provider down`,
+        });
         sink.log('warn', rowName, `↷ skipped (down) — ${step.model}`);
         i += 1;
         continue;
       }
       if (this.isInCooldown(row, fallbackCooldownMs)) {
-        const waitMs = (row.cooldownMs || fallbackCooldownMs) - (Date.now() - (row.lastHealthCheck?.getTime() ?? Date.now()));
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'skipped', 0, `provider '${rowName}' cooling down (~${Math.ceil(waitMs / 1000)}s)`));
-        sink.emit({ nodeId: req.nodeId, status: 'skipped', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs: 0, message: `skipped — cooling down` });
-        sink.log('warn', rowName, `↷ skipped (cooldown ${Math.ceil(waitMs / 1000)}s) — ${step.model}`);
+        const waitMs =
+          (row.cooldownMs || fallbackCooldownMs) -
+          (Date.now() - (row.lastHealthCheck?.getTime() ?? Date.now()));
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'skipped',
+            0,
+            `provider '${rowName}' cooling down (~${Math.ceil(waitMs / 1000)}s)`,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'skipped',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs: 0,
+          message: `skipped — cooling down`,
+        });
+        sink.log(
+          'warn',
+          rowName,
+          `↷ skipped (cooldown ${Math.ceil(waitMs / 1000)}s) — ${step.model}`,
+        );
         i += 1;
         continue;
       }
       if (!row.supportsImages) {
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'skipped', 0, `provider '${rowName}' has no image capability`));
-        sink.emit({ nodeId: req.nodeId, status: 'skipped', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs: 0, message: `skipped — no image support` });
-        sink.log('warn', rowName, `↷ skipped (no image capability) — ${step.model}`);
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'skipped',
+            0,
+            `provider '${rowName}' has no image capability`,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'skipped',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs: 0,
+          message: `skipped — no image support`,
+        });
+        sink.log(
+          'warn',
+          rowName,
+          `↷ skipped (no image capability) — ${step.model}`,
+        );
         i += 1;
         continue;
       }
       const quota = await this.quotaFor(row);
       if (quota.exceeded) {
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'skipped', 0, `provider '${rowName}' — ${quota.reason}`));
-        sink.emit({ nodeId: req.nodeId, status: 'skipped', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs: 0, message: `skipped — ${quota.reason}` });
-        sink.log('warn', rowName, `↷ skipped (${quota.reason}) — ${step.model}`);
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'skipped',
+            0,
+            `provider '${rowName}' — ${quota.reason}`,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'skipped',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs: 0,
+          message: `skipped — ${quota.reason}`,
+        });
+        sink.log(
+          'warn',
+          rowName,
+          `↷ skipped (${quota.reason}) — ${step.model}`,
+        );
         i += 1;
         continue;
       }
@@ -194,15 +326,37 @@ export class RoutingService {
       try {
         adapter = this.adapterFactory.forProvider(row);
       } catch (error) {
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'error', 0, error instanceof Error ? error.message : String(error)));
-        sink.log('error', rowName, `✗ no adapter — ${step.model}: ${error instanceof Error ? error.message : String(error)}`);
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'error',
+            0,
+            error instanceof Error ? error.message : String(error),
+          ),
+        );
+        sink.log(
+          'error',
+          rowName,
+          `✗ no adapter — ${step.model}: ${error instanceof Error ? error.message : String(error)}`,
+        );
         lastError.push(error instanceof Error ? error.message : String(error));
         i += 1;
         continue;
       }
 
       const startedAt = Date.now();
-      sink.emit({ nodeId: req.nodeId, status: 'retrying', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs: 0, message: `trying ${rowName}/${step.model}` });
+      sink.emit({
+        nodeId: req.nodeId,
+        status: 'retrying',
+        attempt: attemptNumber,
+        provider: rowName,
+        model: step.model,
+        latencyMs: 0,
+        message: `trying ${rowName}/${step.model}`,
+      });
       sink.log('info', rowName, `→ attempt ${attemptNumber}: ${step.model}`);
       try {
         const images = await adapter.generate(row, {
@@ -215,10 +369,40 @@ export class RoutingService {
         });
         const latencyMs = Date.now() - startedAt;
         const costUsd = images.length * adapter.costPerImage;
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'success', latencyMs, undefined, costUsd));
-        sink.emit({ nodeId: req.nodeId, status: 'success', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs, message: `ok in ${latencyMs}ms` });
-        sink.log('success', rowName, `✔ ${step.model} generated ${images.length} image(s) in ${latencyMs}ms ($${costUsd.toFixed(4)})`);
-        await this.recordUsage(row, ctx?.userId, req.prompt, images.length, costUsd, 'success');
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'success',
+            latencyMs,
+            undefined,
+            costUsd,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'success',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs,
+          message: `ok in ${latencyMs}ms`,
+        });
+        sink.log(
+          'success',
+          rowName,
+          `✔ ${step.model} generated ${images.length} image(s) in ${latencyMs}ms ($${costUsd.toFixed(4)})`,
+        );
+        await this.recordUsage(
+          row,
+          ctx?.userId,
+          req.prompt,
+          images.length,
+          costUsd,
+          'success',
+        );
         await this.recover(row.id, latencyMs);
         return {
           images,
@@ -230,19 +414,54 @@ export class RoutingService {
       } catch (error) {
         const latencyMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
-        attempts.push(this.record(req.nodeId, rowName, step.model, attemptNumber, 'error', latencyMs, message));
-        sink.emit({ nodeId: req.nodeId, status: 'retrying', attempt: attemptNumber, provider: rowName, model: step.model, latencyMs, message: `failed — ${message.slice(0, 120)}` });
-        sink.log('error', rowName, `✗ ${step.model} failed in ${latencyMs}ms: ${message.slice(0, 200)}`);
+        attempts.push(
+          this.record(
+            req.nodeId,
+            rowName,
+            step.model,
+            attemptNumber,
+            'error',
+            latencyMs,
+            message,
+          ),
+        );
+        sink.emit({
+          nodeId: req.nodeId,
+          status: 'retrying',
+          attempt: attemptNumber,
+          provider: rowName,
+          model: step.model,
+          latencyMs,
+          message: `failed — ${message.slice(0, 120)}`,
+        });
+        sink.log(
+          'error',
+          rowName,
+          `✗ ${step.model} failed in ${latencyMs}ms: ${message.slice(0, 200)}`,
+        );
         lastError.push(message);
         await this.recordUsage(row, ctx?.userId, req.prompt, 0, 0, 'error');
         await this.markFailure(row.id);
 
-        const injected = await this.rules.applyFailover({ chain: steps, failedIndex: i, provider: rowName, model: step.model });
+        const injected = await this.rules.applyFailover({
+          chain: steps,
+          failedIndex: i,
+          provider: rowName,
+          model: step.model,
+        });
         if (injected.length) {
           steps.splice(i + 1, 0, ...injected);
-          sink.log('info', 'rules', `rule failover → ${injected.map((s) => s.provider + '/' + s.model).join(', ')}`);
+          sink.log(
+            'info',
+            'rules',
+            `rule failover → ${injected.map((s) => s.provider + '/' + s.model).join(', ')}`,
+          );
           if (attempts.length > req.chain.length + 4) {
-            sink.log('error', 'rules', 'failover budget exceeded — stopping chain');
+            sink.log(
+              'error',
+              'rules',
+              'failover budget exceeded — stopping chain',
+            );
             break;
           }
         }
@@ -251,7 +470,9 @@ export class RoutingService {
     }
 
     const summary = lastError.join(' | ') || 'no usable providers in chain';
-    throw new Error(`All ${req.chain.length} routing step(s) failed: ${summary}`);
+    throw new Error(
+      `All ${req.chain.length} routing step(s) failed: ${summary}`,
+    );
   }
 
   private async recordUsage(
@@ -289,11 +510,23 @@ export class RoutingService {
     error?: string,
     costUsd = 0,
   ): RoutingAttempt {
-    return { nodeId, provider, model, attempt, status, latencyMs, error, costUsd };
+    return {
+      nodeId,
+      provider,
+      model,
+      attempt,
+      status,
+      latencyMs,
+      error,
+      costUsd,
+    };
   }
 
   private sumCost(attempts: RoutingAttempt[]): number {
-    return attempts.reduce((sum, a) => sum + (a.status === 'success' ? a.costUsd : 0), 0);
+    return attempts.reduce(
+      (sum, a) => sum + (a.status === 'success' ? a.costUsd : 0),
+      0,
+    );
   }
 
   private async markFailure(id: string) {
@@ -310,7 +543,9 @@ export class RoutingService {
         },
       });
       if (streak >= AUTO_DISABLE_STREAK) {
-        this.logger.warn(`provider ${row.name} auto-disabled after ${streak} consecutive failures`);
+        this.logger.warn(
+          `provider ${row.name} auto-disabled after ${streak} consecutive failures`,
+        );
       }
     } catch {
       // best-effort

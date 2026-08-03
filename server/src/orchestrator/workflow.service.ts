@@ -55,8 +55,7 @@ export class WorkflowService implements OnModuleInit {
     });
     return workflows.map(({ graph, ...workflow }) => ({
       ...workflow,
-      nodeCount:
-        ((graph as { nodes?: unknown[] } | null)?.nodes?.length ?? 0),
+      nodeCount: (graph as { nodes?: unknown[] } | null)?.nodes?.length ?? 0,
     }));
   }
 
@@ -127,7 +126,9 @@ export class WorkflowService implements OnModuleInit {
     const nodes = (graph as { nodes?: unknown }).nodes;
     const edges = (graph as { edges?: unknown }).edges;
     if (!Array.isArray(nodes) || !Array.isArray(edges)) {
-      throw new BadRequestException('graph must contain nodes and edges arrays');
+      throw new BadRequestException(
+        'graph must contain nodes and edges arrays',
+      );
     }
     if (nodes.length > GRAPH_LIMIT) {
       throw new BadRequestException(
@@ -151,9 +152,7 @@ export class WorkflowService implements OnModuleInit {
         !ids.has(edge.source) ||
         !ids.has(edge.target)
       ) {
-        throw new BadRequestException(
-          'edges must reference existing node ids',
-        );
+        throw new BadRequestException('edges must reference existing node ids');
       }
     }
   }

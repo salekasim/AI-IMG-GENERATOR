@@ -32,7 +32,10 @@ export class RateLimitService implements OnModuleDestroy {
     }
     bucket.count += 1;
     if (bucket.count > limit) {
-      return { allowed: false, retryAfterSec: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)) };
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
+      };
     }
     return { allowed: true, retryAfterSec: 0 };
   }

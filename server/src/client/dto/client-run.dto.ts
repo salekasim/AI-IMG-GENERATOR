@@ -1,4 +1,4 @@
-import { IsObject, IsOptional, IsString, IsUrl, MaxLength } from 'class-validator';
+import { IsObject, IsOptional, IsUrl, MaxLength } from 'class-validator';
 
 export class ClientRunDto {
   @IsOptional()

@@ -1,6 +1,10 @@
 import { Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
-import { GenerationImage, GenerationRequest, ProviderAdapter } from './provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+  ProviderAdapter,
+} from './provider.adapter';
 import { CryptoService } from '../../common/crypto.service';
 
 @Injectable()
@@ -22,7 +26,12 @@ export class OpenAIAdapter implements ProviderAdapter {
     }
     const model = request.model ?? 'gpt-image-1';
     const ratio = `${request.size.width}x${request.size.height}`;
-    const size = ratio === '1280x720' ? '1536x1024' : ratio === '720x1280' ? '1024x1536' : '1024x1024';
+    const size =
+      ratio === '1280x720'
+        ? '1536x1024'
+        : ratio === '720x1280'
+          ? '1024x1536'
+          : '1024x1024';
 
     const response = await fetch(`${provider.baseUrl}/images/generations`, {
       method: 'POST',
@@ -41,7 +50,9 @@ export class OpenAIAdapter implements ProviderAdapter {
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw new Error(`OpenAI failed with ${response.status}: ${detail}`.slice(0, 500));
+      throw new Error(
+        `OpenAI failed with ${response.status}: ${detail}`.slice(0, 500),
+      );
     }
     const data = (await response.json()) as {
       data: Array<{ b64_json: string }>;

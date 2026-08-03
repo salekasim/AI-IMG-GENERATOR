@@ -93,7 +93,10 @@ export class AuthService {
       throw new ConflictException('Email already registered');
     }
     const passwordHash = await hash(dto.password, 10);
-    const dailyQuota = await this.config.getNumber('users.defaultDailyQuota', 20);
+    const dailyQuota = await this.config.getNumber(
+      'users.defaultDailyQuota',
+      20,
+    );
     const user = await this.users.create({
       email,
       name: dto.name ?? null,
@@ -119,7 +122,8 @@ export class AuthService {
     }
 
     const user = await this.users.findByEmail(email);
-    const ok = !!user?.passwordHash && (await compare(dto.password, user.passwordHash));
+    const ok =
+      !!user?.passwordHash && (await compare(dto.password, user.passwordHash));
 
     if (!ok) {
       state.count += 1;
@@ -153,7 +157,10 @@ export class AuthService {
     const email = payload.email.toLowerCase();
     let user = await this.users.findByEmail(email);
     if (!user) {
-      const dailyQuota = await this.config.getNumber('users.defaultDailyQuota', 20);
+      const dailyQuota = await this.config.getNumber(
+        'users.defaultDailyQuota',
+        20,
+      );
       user = await this.users.create({
         email,
         name: payload.name ?? null,

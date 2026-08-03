@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
-import { GenerationImage, GenerationRequest, ProviderAdapter } from './provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+  ProviderAdapter,
+} from './provider.adapter';
 import { CryptoService } from '../../common/crypto.service';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,7 +38,9 @@ export class ReplicateAdapter implements ProviderAdapter {
     const base = provider.baseUrl.replace(/\/+$/, '');
     const [owner, modelName] = model.split('/');
     if (!owner || !modelName) {
-      throw new Error(`Invalid Replicate model '${model}' — expected owner/name`);
+      throw new Error(
+        `Invalid Replicate model '${model}' — expected owner/name`,
+      );
     }
 
     const createRes = await fetch(
@@ -58,7 +64,12 @@ export class ReplicateAdapter implements ProviderAdapter {
     );
     if (!createRes.ok) {
       const detail = await createRes.text().catch(() => '');
-      throw new Error(`Replicate create failed with ${createRes.status}: ${detail}`.slice(0, 500));
+      throw new Error(
+        `Replicate create failed with ${createRes.status}: ${detail}`.slice(
+          0,
+          500,
+        ),
+      );
     }
     const created = (await createRes.json()) as ReplicatePrediction;
 
@@ -67,7 +78,9 @@ export class ReplicateAdapter implements ProviderAdapter {
     while (Date.now() < deadline) {
       if (prediction.status === 'succeeded') break;
       if (prediction.status === 'failed' || prediction.status === 'canceled') {
-        throw new Error(`Replicate prediction failed: ${prediction.error ?? prediction.status}`);
+        throw new Error(
+          `Replicate prediction failed: ${prediction.error ?? prediction.status}`,
+        );
       }
       await sleep(1000);
       const pollRes = await fetch(`${base}/predictions/${prediction.id}`, {

@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
-import { GenerationImage, GenerationRequest, ProviderAdapter } from './provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+  ProviderAdapter,
+} from './provider.adapter';
 
 @Injectable()
 export class PollinationsAdapter implements ProviderAdapter {

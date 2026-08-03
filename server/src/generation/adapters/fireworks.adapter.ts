@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
-import { GenerationImage, GenerationRequest, ProviderAdapter } from './provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+  ProviderAdapter,
+} from './provider.adapter';
 import { CryptoService } from '../../common/crypto.service';
 
 /** Fireworks AI images API (OpenAI-compatible, e.g. FLUX.1). */
@@ -21,7 +25,8 @@ export class FireworksAdapter implements ProviderAdapter {
     if (!apiKey) {
       throw new Error('Fireworks API key is not configured');
     }
-    const model = request.model ?? 'accounts/fireworks/models/flux-1-schnell-fp8';
+    const model =
+      request.model ?? 'accounts/fireworks/models/flux-1-schnell-fp8';
 
     const response = await fetch(
       `${provider.baseUrl.replace(/\/+$/, '')}/images/generations`,
@@ -43,7 +48,12 @@ export class FireworksAdapter implements ProviderAdapter {
     );
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw new Error(`Fireworks ${model} failed with ${response.status}: ${detail}`.slice(0, 500));
+      throw new Error(
+        `Fireworks ${model} failed with ${response.status}: ${detail}`.slice(
+          0,
+          500,
+        ),
+      );
     }
     const data = (await response.json()) as {
       data: Array<{ b64_json: string }>;

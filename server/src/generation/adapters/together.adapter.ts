@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
-import { GenerationImage, GenerationRequest, ProviderAdapter } from './provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+  ProviderAdapter,
+} from './provider.adapter';
 import { CryptoService } from '../../common/crypto.service';
 
 /** Together AI images API (OpenAI-compatible, e.g. FLUX.1). */
@@ -42,14 +46,21 @@ export class TogetherAdapter implements ProviderAdapter {
           width: request.size.width,
           height: request.size.height,
           seed: request.seed,
-          ...(request.negativePrompt ? { negative_prompt: request.negativePrompt } : {}),
+          ...(request.negativePrompt
+            ? { negative_prompt: request.negativePrompt }
+            : {}),
         }),
         signal: AbortSignal.timeout(provider.timeoutMs || 120000),
       },
     );
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw new Error(`Together ${model} failed with ${response.status}: ${detail}`.slice(0, 500));
+      throw new Error(
+        `Together ${model} failed with ${response.status}: ${detail}`.slice(
+          0,
+          500,
+        ),
+      );
     }
     const data = (await response.json()) as {
       data: Array<{ b64_json: string }>;

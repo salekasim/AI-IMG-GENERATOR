@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
-import { GenerationImage, GenerationRequest, ProviderAdapter } from './provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+  ProviderAdapter,
+} from './provider.adapter';
 import { CryptoService } from '../../common/crypto.service';
 
 /** Google Gemini Imagen — REST predict API. */
@@ -31,7 +35,8 @@ export class GeminiAdapter implements ProviderAdapter {
       },
     };
     if (request.negativePrompt) {
-      (body.parameters as Record<string, unknown>).negativePrompt = request.negativePrompt;
+      (body.parameters as Record<string, unknown>).negativePrompt =
+        request.negativePrompt;
     }
 
     const base = provider.baseUrl.replace(/\/+$/, '');
@@ -44,7 +49,12 @@ export class GeminiAdapter implements ProviderAdapter {
     });
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
-      throw new Error(`Gemini ${model} failed with ${response.status}: ${detail}`.slice(0, 500));
+      throw new Error(
+        `Gemini ${model} failed with ${response.status}: ${detail}`.slice(
+          0,
+          500,
+        ),
+      );
     }
     const data = (await response.json()) as {
       predictions?: Array<{ bytesBase64Encoded: string }>;

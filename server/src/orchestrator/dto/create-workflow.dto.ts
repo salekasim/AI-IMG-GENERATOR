@@ -1,4 +1,11 @@
-import { IsDefined, IsObject, IsOptional, IsString, IsUrl, MaxLength } from 'class-validator';
+import {
+  IsDefined,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MaxLength,
+} from 'class-validator';
 
 export class CreateWorkflowDto {
   @IsString()

@@ -37,7 +37,13 @@ export class ClientController {
     const project = await this.client.resolveProject(secretKey);
     const workflow = await this.prisma.workflow.findUnique({
       where: { id: workflowId },
-      select: { id: true, name: true, enabled: true, projectId: true, webhookUrl: true },
+      select: {
+        id: true,
+        name: true,
+        enabled: true,
+        projectId: true,
+        webhookUrl: true,
+      },
     });
     if (!workflow) throw new NotFoundException('Workflow not found');
     if (!workflow.enabled) {
@@ -84,7 +90,9 @@ export class ClientController {
     @Req() req: Request,
   ): Promise<Observable<MessageEvent>> {
     const project = await this.client.resolveProject(secretKey);
-    const token = (req as unknown as { query: Record<string, string> }).query?.['token'];
+    const token = (req as unknown as { query: Record<string, string> }).query?.[
+      'token'
+    ];
     if (!token || !this.client.verifyStreamToken(token, project.id)) {
       throw new UnauthorizedException('Invalid stream token');
     }
@@ -98,7 +106,9 @@ export class ClientController {
         subscriber.next({ data: JSON.stringify(event) } as MessageEvent);
       };
       if (this.sse.isDone(id)) {
-        subscriber.next({ data: JSON.stringify({ type: 'done', ts: new Date().toISOString() }) } as MessageEvent);
+        subscriber.next({
+          data: JSON.stringify({ type: 'done', ts: new Date().toISOString() }),
+        } as MessageEvent);
         subscriber.complete();
         return;
       }

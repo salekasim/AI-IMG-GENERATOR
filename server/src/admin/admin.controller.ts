@@ -15,6 +15,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
+import { clampInt } from '../common/num.util';
 import { AdminService } from './admin.service';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpdateSettingDto } from './dto/update-setting.dto';
@@ -32,11 +33,8 @@ export class AdminController {
   }
 
   @Get('users')
-  listUsers(
-    @Query('q') q?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.admin.listUsers(q, Number(limit ?? 50));
+  listUsers(@Query('q') q?: string, @Query('limit') limit?: string) {
+    return this.admin.listUsers(q, clampInt(limit, 50, 1, 200));
   }
 
   @Patch('users/:id')
@@ -60,7 +58,7 @@ export class AdminController {
 
   @Get('analytics')
   analytics(@Query('days') days?: string) {
-    return this.admin.analytics(Number(days ?? 30));
+    return this.admin.analytics(clampInt(days, 30, 1, 365));
   }
 
   @Patch('providers/:id')

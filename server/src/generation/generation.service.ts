@@ -4,6 +4,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import {
@@ -13,16 +14,20 @@ import {
 } from '../common/platform-config.service';
 import { ProvidersService } from '../providers/providers.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { Prisma } from '@prisma/client';
 import { UsersService } from '../users/users.service';
 import { UsageService } from '../usage/usage.service';
 import { ProviderAdapterFactory } from './adapters/provider-adapter.factory';
-import { GenerationImage, GenerationRequest } from './adapters/provider.adapter';
+import {
+  GenerationImage,
+  GenerationRequest,
+} from './adapters/provider.adapter';
 import { GenerateDto } from './dto/generate.dto';
 import { sizeFor } from './ratio';
 
 @Injectable()
 export class GenerationService {
+  private readonly logger = new Logger(GenerationService.name);
+
   constructor(
     private readonly providers: ProvidersService,
     private readonly users: UsersService,
@@ -64,7 +69,9 @@ export class GenerationService {
   }
 
   async deleteHistoryEntry(userId: string, id: string) {
-    const row = await this.prisma.generation.findFirst({ where: { id, userId } });
+    const row = await this.prisma.generation.findFirst({
+      where: { id, userId },
+    });
     if (!row) return { removed: false };
     await this.prisma.generation.delete({ where: { id } });
     return { removed: true };
@@ -75,7 +82,10 @@ export class GenerationService {
     if (prompt.length < 3) {
       throw new BadRequestException('Prompt must be at least 3 characters');
     }
-    const maxImagesPerRun = await this.config.getNumber('users.maxImagesPerRun', 4);
+    const maxImagesPerRun = await this.config.getNumber(
+      'users.maxImagesPerRun',
+      4,
+    );
     if (dto.imageCount < 1 || dto.imageCount > maxImagesPerRun) {
       throw new BadRequestException(
         `imageCount must be between 1 and ${maxImagesPerRun}`,
@@ -86,13 +96,24 @@ export class GenerationService {
     if (!user) throw new ForbiddenException('Account not found');
     if (user.banned) throw new ForbiddenException('Account banned');
 
-    const tierRaw = dto.resolution ?? (await this.config.getString('users.defaultResolution', 'medium'));
+    const tierRaw =
+      dto.resolution ??
+      (await this.config.getString('users.defaultResolution', 'medium'));
     const tier: ResolutionTier = isResolutionTier(tierRaw) ? tierRaw : 'medium';
     if (!(await this.config.isResolutionEnabled(tier))) {
-      throw new ForbiddenException(`Resolution tier '${tier}' is disabled by the admin`);
+      throw new ForbiddenException(
+        `Resolution tier '${tier}' is disabled by the admin`,
+      );
     }
-    if (!(await this.config.isResolutionAllowedForUser(tier, user.role === 'ADMIN'))) {
-      throw new ForbiddenException(`Resolution tier '${tier}' is not allowed for your account`);
+    if (
+      !(await this.config.isResolutionAllowedForUser(
+        tier,
+        user.role === 'ADMIN',
+      ))
+    ) {
+      throw new ForbiddenException(
+        `Resolution tier '${tier}' is not allowed for your account`,
+      );
     }
 
     const usedToday = await this.usage.countToday(userId);
@@ -130,7 +151,10 @@ export class GenerationService {
     for (const provider of enabledProviders) {
       try {
         const adapter = this.adapterFactory.forProvider(provider);
-        const images: GenerationImage[] = await adapter.generate(provider, request);
+        const images: GenerationImage[] = await adapter.generate(
+          provider,
+          request,
+        );
         await this.usage.record({
           userId,
           providerId: provider.id,
@@ -152,7 +176,7 @@ export class GenerationService {
             sizeH: request.size.height,
             imageCount: images.length,
             status: 'success',
-            images: images.map((img) => img.b64) as Prisma.InputJsonValue,
+            images: images.map((img) => img.b64),
             costUsd: images.length * adapter.costPerImage,
           },
         });
@@ -202,6 +226,9 @@ export class GenerationService {
       lastError instanceof Error
         ? lastError.message
         : 'All AI providers failed';
-    throw new ServiceUnavailableException(message);
+    this.logger.warn(`generation failed for user ${userId}: ${message}`);
+    throw new ServiceUnavailableException(
+      'Image generation failed — no provider could produce an image. Try again shortly.',
+    );
   }
 }

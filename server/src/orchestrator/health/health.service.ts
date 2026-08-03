@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
 import { PlatformConfigService } from '../../common/platform-config.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -48,7 +53,9 @@ export class HealthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async pingAll(): Promise<void> {
-    const providers = await this.prisma.aiProvider.findMany({ where: { enabled: true } });
+    const providers = await this.prisma.aiProvider.findMany({
+      where: { enabled: true },
+    });
     for (const provider of providers) {
       try {
         await this.ping(provider);
@@ -77,7 +84,9 @@ export class HealthService implements OnModuleInit, OnModuleDestroy {
     }
     const latencyMs = Date.now() - startedAt;
 
-    const current = await this.prisma.aiProvider.findUnique({ where: { id: row.id } });
+    const current = await this.prisma.aiProvider.findUnique({
+      where: { id: row.id },
+    });
     if (!current) return;
 
     if (reachable) {
@@ -90,7 +99,9 @@ export class HealthService implements OnModuleInit, OnModuleDestroy {
         },
       });
       if (current.healthStatus !== 'healthy') {
-        this.logger.log(`provider ${row.name} is healthy again (${latencyMs}ms)`);
+        this.logger.log(
+          `provider ${row.name} is healthy again (${latencyMs}ms)`,
+        );
       }
       return;
     }
@@ -99,10 +110,16 @@ export class HealthService implements OnModuleInit, OnModuleDestroy {
     const healthStatus = streak >= DOWN_STREAK ? 'down' : 'degraded';
     await this.prisma.aiProvider.update({
       where: { id: row.id },
-      data: { healthStatus, failureStreak: streak, lastHealthCheck: new Date() },
+      data: {
+        healthStatus,
+        failureStreak: streak,
+        lastHealthCheck: new Date(),
+      },
     });
     if (healthStatus === 'down') {
-      this.logger.warn(`provider ${row.name} marked down after ${streak} failed health checks`);
+      this.logger.warn(
+        `provider ${row.name} marked down after ${streak} failed health checks`,
+      );
     }
   }
 

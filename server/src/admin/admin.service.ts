@@ -39,17 +39,23 @@ export class AdminService {
     const weekStart = new Date(startOfDay);
     weekStart.setDate(weekStart.getDate() - 6);
 
-    const [totalUsers, admins, banned, totalGenerations, todayGenerations, activeToday] =
-      await Promise.all([
-        this.prisma.user.count(),
-        this.prisma.user.count({ where: { role: Role.ADMIN } }),
-        this.prisma.user.count({ where: { banned: true } }),
-        this.prisma.usageRecord.count({ where: { status: SUCCESS } }),
-        this.prisma.usageRecord.count({
-          where: { status: SUCCESS, createdAt: { gte: startOfDay } },
-        }),
-        this.prisma.user.count({ where: { lastLoginAt: { gte: startOfDay } } }),
-      ]);
+    const [
+      totalUsers,
+      admins,
+      banned,
+      totalGenerations,
+      todayGenerations,
+      activeToday,
+    ] = await Promise.all([
+      this.prisma.user.count(),
+      this.prisma.user.count({ where: { role: Role.ADMIN } }),
+      this.prisma.user.count({ where: { banned: true } }),
+      this.prisma.usageRecord.count({ where: { status: SUCCESS } }),
+      this.prisma.usageRecord.count({
+        where: { status: SUCCESS, createdAt: { gte: startOfDay } },
+      }),
+      this.prisma.user.count({ where: { lastLoginAt: { gte: startOfDay } } }),
+    ]);
 
     const [recentRecords, providers, providerUsage] = await Promise.all([
       this.prisma.usageRecord.findMany({
@@ -141,7 +147,10 @@ export class AdminService {
     if (!user) {
       throw new NotFoundException('User not found');
     }
-    if (id === actorId && (dto.role !== undefined || dto.banned !== undefined)) {
+    if (
+      id === actorId &&
+      (dto.role !== undefined || dto.banned !== undefined)
+    ) {
       throw new ForbiddenException(
         'You cannot change your own role or ban status',
       );
@@ -285,7 +294,9 @@ export class AdminService {
     }
     if (dto.apiKey !== undefined) {
       data.apiKeyEnc =
-        dto.apiKey.trim() === '' ? null : this.crypto.encrypt(dto.apiKey.trim());
+        dto.apiKey.trim() === ''
+          ? null
+          : this.crypto.encrypt(dto.apiKey.trim());
       changed.push('apiKey');
     }
 
@@ -379,7 +390,10 @@ export class AdminService {
   }
 
   async analytics(days = 30) {
-    const daysSafe = Math.min(Math.max(Number.isFinite(days) ? days : 30, 1), 365);
+    const daysSafe = Math.min(
+      Math.max(Number.isFinite(days) ? days : 30, 1),
+      365,
+    );
     const from = new Date();
     from.setHours(0, 0, 0, 0);
     from.setDate(from.getDate() - (daysSafe - 1));
@@ -437,22 +451,49 @@ export class AdminService {
     const projectsById = new Map(projects.map((p) => [p.id, p]));
     const usersById = new Map(users.map((u) => [u.id, u]));
 
-    const dayRuns = new Map<string, { runs: number; errors: number; costUsd: number }>();
+    const dayRuns = new Map<
+      string,
+      { runs: number; errors: number; costUsd: number }
+    >();
     const providerAgg = new Map<
       string,
-      { runs: number; ok: number; fail: number; latencyMs: number; costUsd: number }
+      {
+        runs: number;
+        ok: number;
+        fail: number;
+        latencyMs: number;
+        costUsd: number;
+      }
     >();
     const modelAgg = new Map<
       string,
-      { runs: number; ok: number; fail: number; latencyMs: number; costUsd: number }
+      {
+        runs: number;
+        ok: number;
+        fail: number;
+        latencyMs: number;
+        costUsd: number;
+      }
     >();
     const workflowAgg = new Map<
       string,
-      { name: string; runs: number; ok: number; latencyMs: number; costUsd: number }
+      {
+        name: string;
+        runs: number;
+        ok: number;
+        latencyMs: number;
+        costUsd: number;
+      }
     >();
     const projectAgg = new Map<
       string,
-      { name: string; runs: number; client: number; ok: number; costUsd: number }
+      {
+        name: string;
+        runs: number;
+        client: number;
+        ok: number;
+        costUsd: number;
+      }
     >();
     const userAgg = new Map<
       string,
@@ -460,7 +501,13 @@ export class AdminService {
     >();
     const usageAgg = new Map<
       string,
-      { name: string; calls: number; ok: number; images: number; costUsd: number }
+      {
+        name: string;
+        calls: number;
+        ok: number;
+        images: number;
+        costUsd: number;
+      }
     >();
 
     let totalRuns = 0;
@@ -471,7 +518,7 @@ export class AdminService {
     let totalTokensIn = 0;
     let totalTokensOut = 0;
 
-    const bump = <T,>(map: Map<string, T>, key: string, init: T) => {
+    const bump = <T>(map: Map<string, T>, key: string, init: T) => {
       if (!map.has(key)) map.set(key, init);
       return map.get(key)!;
     };
@@ -493,7 +540,11 @@ export class AdminService {
       if (!ok) day.errors += 1;
 
       const wf = bump(workflowAgg, exec.workflow.id, {
-        name: exec.workflow.name, runs: 0, ok: 0, latencyMs: 0, costUsd: 0,
+        name: exec.workflow.name,
+        runs: 0,
+        ok: 0,
+        latencyMs: 0,
+        costUsd: 0,
       });
       wf.name = exec.workflow.name;
       wf.runs += 1;
@@ -502,9 +553,14 @@ export class AdminService {
       wf.costUsd += exec.costUsd;
 
       if (exec.projectId) {
-        const name = projectsById.get(exec.projectId)?.name ?? 'Deleted project';
+        const name =
+          projectsById.get(exec.projectId)?.name ?? 'Deleted project';
         const pr = bump(projectAgg, exec.projectId, {
-          name, runs: 0, client: 0, ok: 0, costUsd: 0,
+          name,
+          runs: 0,
+          client: 0,
+          ok: 0,
+          costUsd: 0,
         });
         pr.name = name;
         pr.runs += 1;
@@ -517,7 +573,10 @@ export class AdminService {
         const u = usersById.get(exec.createdBy);
         const email = u?.email ?? 'Unknown user';
         const ug = bump(userAgg, exec.createdBy, {
-          email, runs: 0, ok: 0, costUsd: 0,
+          email,
+          runs: 0,
+          ok: 0,
+          costUsd: 0,
         });
         ug.email = email;
         ug.runs += 1;
@@ -525,24 +584,39 @@ export class AdminService {
         ug.costUsd += exec.costUsd;
       }
 
-      const attempts = (exec.attempts as Array<{
-        provider?: string; model?: string; status?: string; latencyMs?: number; costUsd?: number;
-      }> | null) ?? [];
+      const attempts =
+        (exec.attempts as Array<{
+          provider?: string;
+          model?: string;
+          status?: string;
+          latencyMs?: number;
+          costUsd?: number;
+        }> | null) ?? [];
       for (const attempt of attempts) {
         if (!attempt.provider) continue;
         const p = bump(providerAgg, attempt.provider, {
-          runs: 0, ok: 0, fail: 0, latencyMs: 0, costUsd: 0,
+          runs: 0,
+          ok: 0,
+          fail: 0,
+          latencyMs: 0,
+          costUsd: 0,
         });
         p.runs += 1;
-        if (attempt.status === 'success') p.ok += 1; else p.fail += 1;
+        if (attempt.status === 'success') p.ok += 1;
+        else p.fail += 1;
         p.latencyMs += attempt.latencyMs ?? 0;
         p.costUsd += attempt.costUsd ?? 0;
         if (attempt.model) {
           const m = bump(modelAgg, attempt.model, {
-            runs: 0, ok: 0, fail: 0, latencyMs: 0, costUsd: 0,
+            runs: 0,
+            ok: 0,
+            fail: 0,
+            latencyMs: 0,
+            costUsd: 0,
           });
           m.runs += 1;
-          if (attempt.status === 'success') m.ok += 1; else m.fail += 1;
+          if (attempt.status === 'success') m.ok += 1;
+          else m.fail += 1;
           m.latencyMs += attempt.latencyMs ?? 0;
           m.costUsd += attempt.costUsd ?? 0;
         }
@@ -553,7 +627,11 @@ export class AdminService {
       const provider = providersById.get(record.providerId);
       const name = provider?.displayName ?? 'Unknown provider';
       const u = bump(usageAgg, record.providerId ?? name, {
-        name, calls: 0, ok: 0, images: 0, costUsd: 0,
+        name,
+        calls: 0,
+        ok: 0,
+        images: 0,
+        costUsd: 0,
       });
       u.name = name;
       u.calls += 1;
@@ -562,7 +640,12 @@ export class AdminService {
       u.costUsd += record.costUsd;
     }
 
-    const daySeries: { date: string; runs: number; errors: number; costUsd: number }[] = [];
+    const daySeries: {
+      date: string;
+      runs: number;
+      errors: number;
+      costUsd: number;
+    }[] = [];
     for (let i = daysSafe - 1; i >= 0; i--) {
       const d = new Date(from);
       d.setDate(d.getDate() + i);
@@ -571,7 +654,9 @@ export class AdminService {
       daySeries.push({ date: key, ...cur });
     }
 
-    const finish = <T extends { runs: number; latencyMs: number }>(arr: T[]) => {
+    const finish = <T extends { runs: number; latencyMs: number }>(
+      arr: T[],
+    ) => {
       return arr
         .sort((a, b) => b.runs - a.runs)
         .slice(0, 12)
@@ -606,17 +691,20 @@ export class AdminService {
       projects: [...projectAgg.values()]
         .sort((a, b) => b.runs - a.runs)
         .slice(0, 12)
-        .map((p) => ({ ...p, clientRate: p.runs ? Math.round((p.client / p.runs) * 100) : 0 })),
-      users: [...userAgg.values()]
-        .sort((a, b) => b.runs - a.runs)
-        .slice(0, 12),
+        .map((p) => ({
+          ...p,
+          clientRate: p.runs ? Math.round((p.client / p.runs) * 100) : 0,
+        })),
+      users: [...userAgg.values()].sort((a, b) => b.runs - a.runs).slice(0, 12),
       providerHealth: providers.map((p) => ({
         name: p.name,
         displayName: p.displayName,
         healthStatus: p.healthStatus,
         failureStreak: p.failureStreak,
       })),
-      usage: [...usageAgg.values()].sort((a, b) => b.calls - a.calls).slice(0, 12),
+      usage: [...usageAgg.values()]
+        .sort((a, b) => b.calls - a.calls)
+        .slice(0, 12),
     };
   }
 }
@@ -624,4 +712,3 @@ export class AdminService {
 function round4(value: number): number {
   return Math.round(value * 10000) / 10000;
 }
-

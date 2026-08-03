@@ -5,14 +5,21 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { CryptoService } from '../../common/crypto.service';
 import { PlatformConfigService } from '../../common/platform-config.service';
+import { assertSafeWebhookUrl } from '../../common/url-safety.util';
 import { ProviderAdapterFactory } from '../../generation/adapters/provider-adapter.factory';
 import { ChatAdapter } from './chat.adapter';
-import { RoutingService, RoutingAttempt, ChainStep, RoutingSink } from './routing.service';
+import {
+  RoutingService,
+  RoutingAttempt,
+  ChainStep,
+  RoutingSink,
+} from './routing.service';
 import { SseService } from '../sse.service';
 import { WorkflowGraph, WorkflowNode, WorkflowEdge } from './graph.types';
 
@@ -27,7 +34,13 @@ interface ExecutionContext {
   attempts: RoutingAttempt[];
   providerUsed: string | null;
   modelUsed: string | null;
-  chat: { text: string; model: string; provider: string; tokensIn: number; tokensOut: number } | null;
+  chat: {
+    text: string;
+    model: string;
+    provider: string;
+    tokensIn: number;
+    tokensOut: number;
+  } | null;
   userId: string | null;
   visited: Set<string>;
 }
@@ -43,12 +56,15 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const nowIso = () => new Date().toISOString();
 
 @Injectable()
-export class ExecutionEngine {
+export class ExecutionEngine implements OnModuleInit {
   private readonly logger = new Logger(ExecutionEngine.name);
   private readonly queue: string[] = [];
   private running = 0;
   private readonly MAX_CONCURRENT = 2;
-  private readonly buckets = new Map<string, { tokens: number; lastRefill: number }>();
+  private readonly buckets = new Map<
+    string,
+    { tokens: number; lastRefill: number }
+  >();
   private readonly DEFAULT_RPM = 10;
   private readonly webhookOverrides = new Map<string, string>();
 
@@ -62,21 +78,49 @@ export class ExecutionEngine {
     private readonly config: PlatformConfigService,
   ) {}
 
+  async onModuleInit() {
+    // Executions interrupted by a crash/restart would stay stuck forever —
+    // reconcile them to a terminal state so the queue stays honest.
+    const stale = await this.prisma.workflowExecution.updateMany({
+      where: { status: { in: ['pending', 'running'] } },
+      data: {
+        status: 'error',
+        error: 'Server restarted — execution was interrupted',
+        finishedAt: new Date(),
+      },
+    });
+    if (stale.count > 0) {
+      this.logger.warn(
+        `reconciled ${stale.count} stale execution(s) to 'error'`,
+      );
+    }
+    this.webhookOverrides.clear();
+  }
+
   async start(
     workflowId: string,
     payload: Record<string, unknown> | undefined,
     opts?: ExecutionStartOptions,
   ) {
-    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
+    const workflow = await this.prisma.workflow.findUnique({
+      where: { id: workflowId },
+    });
     if (!workflow) throw new NotFoundException('Workflow not found');
     if (!workflow.enabled) {
       throw new BadRequestException(`Workflow '${workflow.name}' is disabled`);
     }
 
+    if (opts?.webhookUrl) {
+      await assertSafeWebhookUrl(opts.webhookUrl);
+    }
+
     const rpm = this.rateLimitFor(workflow.graph as unknown as WorkflowGraph);
     if (!this.consume(workflowId, rpm)) {
       throw new HttpException(
-        { message: `Rate limit exceeded — at most ${rpm} executions/minute for this workflow`, code: 'RATE_LIMIT' },
+        {
+          message: `Rate limit exceeded — at most ${rpm} executions/minute for this workflow`,
+          code: 'RATE_LIMIT',
+        },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
@@ -150,12 +194,20 @@ export class ExecutionEngine {
     };
 
     try {
-      const timeoutMs = await this.config.getNumber('execution.timeoutMs', 300_000);
+      const timeoutMs = await this.config.getNumber(
+        'execution.timeoutMs',
+        300_000,
+      );
       await Promise.race([
         this.interpret(graph, ctx),
         new Promise<never>((_, reject) => {
           const timer = setTimeout(
-            () => reject(new Error(`Execution timed out after ${Math.round(timeoutMs / 1000)}s`)),
+            () =>
+              reject(
+                new Error(
+                  `Execution timed out after ${Math.round(timeoutMs / 1000)}s`,
+                ),
+              ),
             timeoutMs,
           );
           timer.unref?.();
@@ -166,7 +218,7 @@ export class ExecutionEngine {
         where: { id: executionId },
         data: {
           status: 'success',
-          logs: ctx.logs as unknown as Prisma.InputJsonValue,
+          logs: ctx.logs,
           attempts: ctx.attempts as unknown as Prisma.InputJsonValue,
           tokensIn: ctx.tokensIn,
           tokensOut: ctx.tokensOut,
@@ -176,7 +228,10 @@ export class ExecutionEngine {
           modelUsed: ctx.modelUsed,
           durationMs,
           finishedAt: new Date(),
-          output: { chat: ctx.chat, images: ctx.images } as Prisma.InputJsonValue,
+          output: {
+            chat: ctx.chat,
+            images: ctx.images,
+          },
         },
       });
       this.sse.publish(executionId, {
@@ -197,12 +252,17 @@ export class ExecutionEngine {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const durationMs = Date.now() - startedAt;
-      this.sse.publish(executionId, { type: 'log', level: 'error', source: 'engine', message });
+      this.sse.publish(executionId, {
+        type: 'log',
+        level: 'error',
+        source: 'engine',
+        message,
+      });
       await this.prisma.workflowExecution.update({
         where: { id: executionId },
         data: {
           status: 'error',
-          logs: ctx.logs as unknown as Prisma.InputJsonValue,
+          logs: ctx.logs,
           attempts: ctx.attempts as unknown as Prisma.InputJsonValue,
           tokensIn: ctx.tokensIn,
           tokensOut: ctx.tokensOut,
@@ -226,12 +286,23 @@ export class ExecutionEngine {
     try {
       const execution = await this.prisma.workflowExecution.findUnique({
         where: { id: executionId },
-        include: { workflow: { select: { id: true, name: true, webhookUrl: true } } },
+        include: {
+          workflow: { select: { id: true, name: true, webhookUrl: true } },
+        },
       });
       if (!execution) return;
-      const webhookUrl = this.webhookOverrides.get(executionId) ?? execution.workflow.webhookUrl;
+      const webhookUrl =
+        this.webhookOverrides.get(executionId) ?? execution.workflow.webhookUrl;
       this.webhookOverrides.delete(executionId);
       if (!webhookUrl) return;
+      try {
+        await assertSafeWebhookUrl(webhookUrl);
+      } catch (error) {
+        this.logger.warn(
+          `webhook skipped (unsafe URL): ${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
 
       const body = {
         id: execution.id,
@@ -255,7 +326,10 @@ export class ExecutionEngine {
       const timeout = setTimeout(() => controller.abort(), 5_000);
       const response = await fetch(webhookUrl, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'user-agent': 'intellix-webhook' },
+        headers: {
+          'content-type': 'application/json',
+          'user-agent': 'intellix-webhook',
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -278,11 +352,18 @@ export class ExecutionEngine {
       incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1);
     });
 
-    const entries = graph.nodes.filter((n) => !incoming.has(n.id)).map((n) => n.id);
+    const entries = graph.nodes
+      .filter((n) => !incoming.has(n.id))
+      .map((n) => n.id);
     if (!entries.length && graph.nodes.length) entries.push(graph.nodes[0].id);
     if (!entries.length) return;
 
-    this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: 'engine', message: 'Execution started' });
+    this.sse.publish(ctx.currentId, {
+      type: 'log',
+      level: 'info',
+      source: 'engine',
+      message: 'Execution started',
+    });
     for (const entry of entries) {
       await this.walk(entry, nodes, outgoing, ctx);
     }
@@ -329,10 +410,21 @@ export class ExecutionEngine {
         source: this.nameOf(node),
         message: passed ? '✔ condition TRUE' : '✗ condition FALSE',
       });
-      ctx.logs.push({ ts: nowIso(), level: passed ? 'success' : 'warn', source: this.nameOf(node), message: passed ? 'condition TRUE' : 'condition FALSE' });
-      this.sse.publish(ctx.currentId, { type: 'node', nodeId: id, status: 'success', runtimeMs: 0 });
+      ctx.logs.push({
+        ts: nowIso(),
+        level: passed ? 'success' : 'warn',
+        source: this.nameOf(node),
+        message: passed ? 'condition TRUE' : 'condition FALSE',
+      });
+      this.sse.publish(ctx.currentId, {
+        type: 'node',
+        nodeId: id,
+        status: 'success',
+        runtimeMs: 0,
+      });
       for (const out of outs) {
-        if ((out.handle ?? 'true') === follow) await this.walk(out.target, nodes, outgoing, ctx);
+        if ((out.handle ?? 'true') === follow)
+          await this.walk(out.target, nodes, outgoing, ctx);
       }
       return;
     }
@@ -351,10 +443,24 @@ export class ExecutionEngine {
         type: 'log',
         level: matched ? 'success' : 'warn',
         source: this.nameOf(node),
-        message: matched ? `routing to branch '${value}'` : `no branch matches '${value}'`,
+        message: matched
+          ? `routing to branch '${value}'`
+          : `no branch matches '${value}'`,
       });
-      ctx.logs.push({ ts: nowIso(), level: matched ? 'success' : 'warn', source: this.nameOf(node), message: matched ? `routing to branch '${value}'` : `no branch matches '${value}'` });
-      this.sse.publish(ctx.currentId, { type: 'node', nodeId: id, status: 'success', runtimeMs: 0 });
+      ctx.logs.push({
+        ts: nowIso(),
+        level: matched ? 'success' : 'warn',
+        source: this.nameOf(node),
+        message: matched
+          ? `routing to branch '${value}'`
+          : `no branch matches '${value}'`,
+      });
+      this.sse.publish(ctx.currentId, {
+        type: 'node',
+        nodeId: id,
+        status: 'success',
+        runtimeMs: 0,
+      });
       return;
     }
 
@@ -371,7 +477,7 @@ export class ExecutionEngine {
     outgoing: Map<string, Array<{ target: string; handle?: string }>>,
     ctx: ExecutionContext,
   ) {
-    const config = (node.config ?? {}) as Record<string, unknown>;
+    const config = node.config ?? {};
     const attempts = Math.max(1, Number(config.attempts ?? 2));
     const delayMs = Math.max(0, Number(config.delayMs ?? 500));
     const onError = String(config.onError ?? 'next');
@@ -397,7 +503,8 @@ export class ExecutionEngine {
           message: `✔ success on attempt ${attempt}`,
         });
         const targetOuts = outgoing.get(target.target) ?? [];
-        for (const out of targetOuts) await this.walk(out.target, nodes, outgoing, ctx);
+        for (const out of targetOuts)
+          await this.walk(out.target, nodes, outgoing, ctx);
         return;
       } catch (error) {
         lastError = error;
@@ -405,7 +512,8 @@ export class ExecutionEngine {
       }
     }
 
-    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    const message =
+      lastError instanceof Error ? lastError.message : String(lastError);
     if (onError === 'stop') {
       throw new Error(`Retry exhausted after ${attempts} attempts: ${message}`);
     }
@@ -416,21 +524,41 @@ export class ExecutionEngine {
       message: 'all attempts failed — falling back to next node',
     });
     const targetOuts = outgoing.get(target.target) ?? [];
-    for (const out of targetOuts) await this.walk(out.target, nodes, outgoing, ctx);
+    for (const out of targetOuts)
+      await this.walk(out.target, nodes, outgoing, ctx);
   }
 
-  private async executeNode(id: string, node: WorkflowNode, ctx: ExecutionContext): Promise<void> {
+  private async executeNode(
+    id: string,
+    node: WorkflowNode,
+    ctx: ExecutionContext,
+  ): Promise<void> {
     const name = this.nameOf(node);
     const started = Date.now();
-    this.sse.publish(ctx.currentId, { type: 'node', nodeId: id, status: 'running', runtimeMs: 0 });
-    this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `▶ running ${node.type}` });
+    this.sse.publish(ctx.currentId, {
+      type: 'node',
+      nodeId: id,
+      status: 'running',
+      runtimeMs: 0,
+    });
+    this.sse.publish(ctx.currentId, {
+      type: 'log',
+      level: 'info',
+      source: name,
+      message: `▶ running ${node.type}`,
+    });
 
     try {
-      const config = (node.config ?? {}) as Record<string, unknown>;
+      const config = node.config ?? {};
       switch (node.type) {
         case 'trigger': {
           const keys = Object.keys(ctx.payload).join(', ') || '(empty payload)';
-          this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `payload fields: ${keys}` });
+          this.sse.publish(ctx.currentId, {
+            type: 'log',
+            level: 'info',
+            source: name,
+            message: `payload fields: ${keys}`,
+          });
           break;
         }
         case 'chatModel': {
@@ -441,7 +569,9 @@ export class ExecutionEngine {
             provider,
             model,
             prompt: String(ctx.payload.prompt ?? 'Hello world'),
-            systemPrompt: config.systemPrompt ? String(config.systemPrompt) : undefined,
+            systemPrompt: config.systemPrompt
+              ? String(config.systemPrompt)
+              : undefined,
             temperature: Number(config.temperature ?? 0.7),
             maxTokens: Number(config.maxTokens ?? 1024),
             apiKey,
@@ -466,7 +596,9 @@ export class ExecutionEngine {
         case 'imageModel': {
           const chain = await this.resolveImageChain(node, ctx);
           if (!chain.length) {
-            throw new Error('Image node has no routing chain — add providers/models or a routing variable');
+            throw new Error(
+              'Image node has no routing chain — add providers/models or a routing variable',
+            );
           }
           const size = this.parseSize(String(config.size ?? '1024x1024'));
           const count = Math.min(4, Math.max(1, Number(config.count ?? 1)));
@@ -484,7 +616,12 @@ export class ExecutionEngine {
               });
             },
             log: (level, source, message) => {
-              this.sse.publish(ctx.currentId, { type: 'log', level, source, message });
+              this.sse.publish(ctx.currentId, {
+                type: 'log',
+                level,
+                source,
+                message,
+              });
               ctx.logs.push({ ts: nowIso(), level, source, message });
             },
           };
@@ -493,7 +630,9 @@ export class ExecutionEngine {
               nodeId: id,
               chain,
               prompt: String(ctx.payload.prompt ?? 'A beautiful landscape'),
-              negativePrompt: config.negativePrompt ? String(config.negativePrompt) : undefined,
+              negativePrompt: config.negativePrompt
+                ? String(config.negativePrompt)
+                : undefined,
               imageCount: count,
               size,
               seed: config.seed ? Number(config.seed) : undefined,
@@ -521,32 +660,59 @@ export class ExecutionEngine {
           break;
         }
         case 'logger': {
-          const message = String(config.message ?? `log ${config.level ?? 'info'}`);
+          const message = String(
+            config.message ?? `log ${config.level ?? 'info'}`,
+          );
           this.sse.publish(ctx.currentId, {
             type: 'log',
-            level: (config.level as 'info') ?? 'info',
+            level: config.level ?? 'info',
             source: name,
             message,
           });
           break;
         }
         case 'analytics':
-          this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `tracking '${String(config.track ?? 'request')}'` });
+          this.sse.publish(ctx.currentId, {
+            type: 'log',
+            level: 'info',
+            source: name,
+            message: `tracking '${String(config.track ?? 'request')}'`,
+          });
           break;
         case 'notification':
-          this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `sending ${String(config.channel ?? 'webhook')} notification to ${String(config.target ?? '(unset)')}` });
+          this.sse.publish(ctx.currentId, {
+            type: 'log',
+            level: 'info',
+            source: name,
+            message: `sending ${String(config.channel ?? 'webhook')} notification to ${String(config.target ?? '(unset)')}`,
+          });
           break;
         case 'rateLimiter':
-          this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `enforcing ${String(config.rpm ?? '?')} rpm budget` });
+          this.sse.publish(ctx.currentId, {
+            type: 'log',
+            level: 'info',
+            source: name,
+            message: `enforcing ${String(config.rpm ?? '?')} rpm budget`,
+          });
           break;
         case 'storage':
         case 'storageNode':
-          this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `saving output to ${String(config.storage ?? 'Local')}${String(config.path ?? '')}` });
+          this.sse.publish(ctx.currentId, {
+            type: 'log',
+            level: 'info',
+            source: name,
+            message: `saving output to ${String(config.storage ?? 'Local')}${String(config.path ?? '')}`,
+          });
           break;
         case 'wait': {
           const seconds = Math.min(5, Number(config.seconds ?? 0));
           if (seconds > 0) await sleep(seconds * 1000);
-          this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `resumed after ${seconds}s` });
+          this.sse.publish(ctx.currentId, {
+            type: 'log',
+            level: 'info',
+            source: name,
+            message: `resumed after ${seconds}s`,
+          });
           break;
         }
         case 'delay': {
@@ -556,17 +722,37 @@ export class ExecutionEngine {
         }
         default: {
           if (config.apiKey !== undefined && node.type !== 'chatModel') {
-            this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: `provider configured (key ${config.apiKey ? 'present' : 'absent'})` });
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'info',
+              source: name,
+              message: `provider configured (key ${config.apiKey ? 'present' : 'absent'})`,
+            });
           } else {
-            this.sse.publish(ctx.currentId, { type: 'log', level: 'info', source: name, message: 'M2 passthrough — execution wired in M3' });
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'info',
+              source: name,
+              message: 'M2 passthrough — execution wired in M3',
+            });
           }
         }
       }
       if (node.type !== 'imageModel') {
-        this.sse.publish(ctx.currentId, { type: 'node', nodeId: id, status: 'success', runtimeMs: Date.now() - started });
+        this.sse.publish(ctx.currentId, {
+          type: 'node',
+          nodeId: id,
+          status: 'success',
+          runtimeMs: Date.now() - started,
+        });
       }
     } catch (error) {
-      this.sse.publish(ctx.currentId, { type: 'node', nodeId: id, status: 'error', runtimeMs: Date.now() - started });
+      this.sse.publish(ctx.currentId, {
+        type: 'node',
+        nodeId: id,
+        status: 'error',
+        runtimeMs: Date.now() - started,
+      });
       this.sse.publish(ctx.currentId, {
         type: 'log',
         level: 'error',
@@ -577,11 +763,16 @@ export class ExecutionEngine {
     }
   }
 
-  private async resolveKey(provider: string, nodeKey: unknown): Promise<string | null> {
+  private async resolveKey(
+    provider: string,
+    nodeKey: unknown,
+  ): Promise<string | null> {
     if (typeof nodeKey === 'string' && nodeKey.trim()) return nodeKey.trim();
     const rowName = this.imageProviderRow(provider);
     try {
-      const row = await this.prisma.aiProvider.findUnique({ where: { name: rowName } });
+      const row = await this.prisma.aiProvider.findUnique({
+        where: { name: rowName },
+      });
       if (row?.enabled && row.apiKeyEnc) {
         return this.crypto.decrypt(row.apiKeyEnc);
       }
@@ -608,8 +799,11 @@ export class ExecutionEngine {
   }
 
   /** Resolve the ordered model chain for an image node: explicit chain → routing variable → legacy single step. */
-  private async resolveImageChain(node: WorkflowNode, ctx: ExecutionContext): Promise<ChainStep[]> {
-    const config = (node.config ?? {}) as Record<string, unknown>;
+  private async resolveImageChain(
+    node: WorkflowNode,
+    ctx: ExecutionContext,
+  ): Promise<ChainStep[]> {
+    const config = node.config ?? {};
     const maxDepth = await this.config.getNumber('routing.maxChainDepth', 4);
     const chainRaw = Array.isArray(config.chain)
       ? (config.chain as Array<Record<string, unknown>>)
@@ -618,16 +812,26 @@ export class ExecutionEngine {
       const steps: ChainStep[] = chainRaw
         .filter(
           (s) =>
-            typeof s?.provider === 'string' && s.provider.trim() !== '' &&
-            typeof s?.model === 'string' && s.model.trim() !== '',
+            typeof s?.provider === 'string' &&
+            s.provider.trim() !== '' &&
+            typeof s?.model === 'string' &&
+            s.model.trim() !== '',
         )
-        .map((s) => ({ provider: String(s.provider).trim(), model: String(s.model).trim() }))
+        .map((s) => ({
+          provider: String(s.provider).trim(),
+          model: String(s.model).trim(),
+        }))
         .slice(0, maxDepth);
       if (steps.length) return steps;
     }
-    const variable = config.routingVariable ? String(config.routingVariable) : undefined;
+    const variable = config.routingVariable
+      ? String(config.routingVariable)
+      : undefined;
     if (variable) {
-      const steps = (await this.routing.resolveVariable(variable)).slice(0, maxDepth);
+      const steps = (await this.routing.resolveVariable(variable)).slice(
+        0,
+        maxDepth,
+      );
       if (steps.length) {
         this.sse.publish(ctx.currentId, {
           type: 'log',
@@ -654,7 +858,7 @@ export class ExecutionEngine {
   }
 
   private evaluateIf(node: WorkflowNode, ctx: ExecutionContext): boolean {
-    const config = (node.config ?? {}) as Record<string, unknown>;
+    const config = node.config ?? {};
     const field = String(config.field ?? 'plan');
     const left = field.startsWith('payload.')
       ? String(ctx.payload[field.slice(8)] ?? '(unset)')
@@ -677,7 +881,7 @@ export class ExecutionEngine {
   private rateLimitFor(graph: WorkflowGraph): number {
     const limiter = graph.nodes?.find((n) => n.type === 'rateLimiter');
     if (limiter) {
-      const rpm = Number((limiter.config as Record<string, unknown> | undefined)?.rpm);
+      const rpm = Number(limiter.config?.rpm);
       if (Number.isFinite(rpm) && rpm > 0) return Math.min(60, rpm);
     }
     return this.DEFAULT_RPM;
@@ -690,14 +894,19 @@ export class ExecutionEngine {
       bucket = { tokens: rpm, lastRefill: now };
       this.buckets.set(workflowId, bucket);
     }
-    bucket.tokens = Math.min(rpm, bucket.tokens + ((now - bucket.lastRefill) / 1000) * (rpm / 60));
+    bucket.tokens = Math.min(
+      rpm,
+      bucket.tokens + ((now - bucket.lastRefill) / 1000) * (rpm / 60),
+    );
     bucket.lastRefill = now;
     if (bucket.tokens < 1) return false;
     bucket.tokens -= 1;
     return true;
   }
 
-  private outgoingMap(edges: WorkflowEdge[]): Map<string, Array<{ target: string; handle?: string }>> {
+  private outgoingMap(
+    edges: WorkflowEdge[],
+  ): Map<string, Array<{ target: string; handle?: string }>> {
     const map = new Map<string, Array<{ target: string; handle?: string }>>();
     edges.forEach((e) => {
       const list = map.get(e.source) ?? [];
@@ -708,7 +917,7 @@ export class ExecutionEngine {
   }
 
   private nameOf(node: WorkflowNode): string {
-    const config = node.config as Record<string, unknown> | undefined;
+    const config = node.config;
     return typeof config?.name === 'string' ? config.name : node.type;
   }
 }

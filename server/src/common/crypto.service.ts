@@ -9,15 +9,13 @@ import {
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 12;
-const TAG_LENGTH = 16;
 
 @Injectable()
 export class CryptoService {
   private readonly key: Buffer;
 
   constructor(config: ConfigService) {
-    const masterKey =
-      config.get<string>('MASTER_KEY') ?? 'dev-master-key-0123456789';
+    const masterKey = config.getOrThrow<string>('MASTER_KEY');
     this.key = createHash('sha256').update(masterKey).digest();
   }
 

@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { PlatformConfigService } from '../common/platform-config.service';
 import { AuditService } from './audit.service';
 
@@ -38,7 +43,9 @@ export class AuditRetentionService implements OnModuleInit, OnModuleDestroy {
     const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
     const removed = await this.audit.prune(cutoff);
     if (removed > 0) {
-      this.logger.log(`pruned ${removed} audit log(s) older than ${retentionDays} day(s)`);
+      this.logger.log(
+        `pruned ${removed} audit log(s) older than ${retentionDays} day(s)`,
+      );
     }
   }
 }

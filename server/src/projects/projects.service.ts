@@ -1,7 +1,11 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateProjectDto, LinkWorkflowsDto, UpdateProjectDto } from './dto/project.dto';
+import {
+  CreateProjectDto,
+  LinkWorkflowsDto,
+  UpdateProjectDto,
+} from './dto/project.dto';
 
 @Injectable()
 export class ProjectsService {
@@ -40,21 +44,32 @@ export class ProjectsService {
       },
     });
     if (dto.workflowIds?.length) {
-      await this.linkWorkflows(project.id, ownerId, { workflowIds: dto.workflowIds });
+      await this.linkWorkflows(project.id, ownerId, {
+        workflowIds: dto.workflowIds,
+      });
     }
     return project;
   }
 
-  async linkWorkflows(projectId: string, ownerId: string, dto: LinkWorkflowsDto) {
+  async linkWorkflows(
+    projectId: string,
+    ownerId: string,
+    dto: LinkWorkflowsDto,
+  ) {
     await this.ensureOwner(projectId, ownerId);
     const ids = new Set(dto.workflowIds);
-    const workflows = await this.prisma.workflow.findMany({ where: { id: { in: [...ids] } } });
+    const workflows = await this.prisma.workflow.findMany({
+      where: { id: { in: [...ids] } },
+    });
     if (workflows.length !== ids.size) {
       throw new NotFoundException('One or more workflows not found');
     }
     await this.prisma.$transaction(
       workflows.map((w) =>
-        this.prisma.workflow.update({ where: { id: w.id }, data: { projectId } }),
+        this.prisma.workflow.update({
+          where: { id: w.id },
+          data: { projectId },
+        }),
       ),
     );
     return { linked: workflows.length };
@@ -62,9 +77,12 @@ export class ProjectsService {
 
   async unlinkWorkflow(projectId: string, workflowId: string, ownerId: string) {
     await this.ensureOwner(projectId, ownerId);
-    const workflow = await this.prisma.workflow.findUnique({ where: { id: workflowId } });
+    const workflow = await this.prisma.workflow.findUnique({
+      where: { id: workflowId },
+    });
     if (!workflow) throw new NotFoundException('Workflow not found');
-    if (workflow.projectId !== projectId) throw new NotFoundException('Workflow is not linked to this project');
+    if (workflow.projectId !== projectId)
+      throw new NotFoundException('Workflow is not linked to this project');
     return this.prisma.workflow.update({
       where: { id: workflowId },
       data: { projectId: null },
@@ -77,7 +95,9 @@ export class ProjectsService {
       where: { id: project.id },
       data: {
         ...(dto.name !== undefined ? { name: dto.name } : {}),
-        ...(dto.description !== undefined ? { description: dto.description } : {}),
+        ...(dto.description !== undefined
+          ? { description: dto.description }
+          : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
       },
     });
@@ -86,7 +106,10 @@ export class ProjectsService {
   async regenerateKey(id: string, ownerId: string) {
     const project = await this.ensureOwner(id, ownerId);
     const secretKey = this.generateKey();
-    await this.prisma.project.update({ where: { id: project.id }, data: { secretKey } });
+    await this.prisma.project.update({
+      where: { id: project.id },
+      data: { secretKey },
+    });
     return { id: project.id, secretKey };
   }
 
@@ -116,7 +139,8 @@ export class ProjectsService {
   private async ensureOwner(id: string, ownerId: string) {
     const project = await this.prisma.project.findUnique({ where: { id } });
     if (!project) throw new NotFoundException('Project not found');
-    if (project.ownerId !== ownerId) throw new NotFoundException('Project not found');
+    if (project.ownerId !== ownerId)
+      throw new NotFoundException('Project not found');
     return project;
   }
 

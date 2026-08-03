@@ -14,7 +14,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import type { AuthUser } from '../auth/auth.types';
-import { CreateProjectDto, LinkWorkflowsDto, UpdateProjectDto } from './dto/project.dto';
+import {
+  CreateProjectDto,
+  LinkWorkflowsDto,
+  UpdateProjectDto,
+} from './dto/project.dto';
 import { ProjectsService } from './projects.service';
 
 @Controller('projects')
@@ -34,7 +38,11 @@ export class ProjectsController {
   }
 
   @Patch(':id')
-  update(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: UpdateProjectDto) {
+  update(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: UpdateProjectDto,
+  ) {
     return this.projects.update(id, user.userId, dto);
   }
 

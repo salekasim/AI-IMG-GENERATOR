@@ -1,4 +1,12 @@
-import { IsBoolean, IsDefined, IsObject, IsOptional, IsString, IsUrl, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsDefined,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MaxLength,
+} from 'class-validator';
 
 export class UpdateWorkflowDto {
   @IsOptional()

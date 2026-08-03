@@ -1,5 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { Throttle } from '../common/throttle.decorator';
+import { clampInt } from '../common/num.util';
 import type { AuthUser } from '../auth/auth.types';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -28,7 +38,11 @@ export class GenerationController {
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
   ) {
-    return this.generation.history(user.userId, Number(limit ?? 30), Number(offset ?? 0));
+    return this.generation.history(
+      user.userId,
+      clampInt(limit, 30, 1, 100),
+      clampInt(offset, 0, 0, 100000),
+    );
   }
 
   @Delete('generation/history/:id')

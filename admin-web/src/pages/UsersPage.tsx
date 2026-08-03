@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, errorMessage } from '../api/client';
 import type { AdminUser } from '../api/types';
@@ -35,7 +35,7 @@ export default function UsersPage() {
     tone: 'error',
   });
 
-  useMemo(() => {
+  useEffect(() => {
     const timer = setTimeout(() => setDebounced(query), 350);
     return () => clearTimeout(timer);
   }, [query]);

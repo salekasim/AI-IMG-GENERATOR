@@ -1,7 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
-type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+type JsonValue =
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 export interface PlatformSettingDef {
   key: string;
@@ -41,7 +42,10 @@ const RESOLUTION_KEYS = ['high', 'medium', 'low'] as const;
 export type ResolutionTier = (typeof RESOLUTION_KEYS)[number];
 
 export function isResolutionTier(value: unknown): value is ResolutionTier {
-  return typeof value === 'string' && (RESOLUTION_KEYS as readonly string[]).includes(value);
+  return (
+    typeof value === 'string' &&
+    (RESOLUTION_KEYS as readonly string[]).includes(value)
+  );
 }
 
 @Injectable()
@@ -55,7 +59,9 @@ export class PlatformConfigService {
 
   async getNumber(key: string, fallback: number): Promise<number> {
     const value = await this.getRaw(key);
-    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+    return typeof value === 'number' && Number.isFinite(value)
+      ? value
+      : fallback;
   }
 
   async getBoolean(key: string, fallback: boolean): Promise<boolean> {
@@ -88,10 +94,9 @@ export class PlatformConfigService {
 
   /** Generation size multiplier per resolution tier. */
   async getResolutionScale(tier: ResolutionTier): Promise<number> {
-    const presets = await this.getJson<Record<string, { enabled?: boolean; scale?: number }>>(
-      'generation.resolutions',
-      {},
-    );
+    const presets = await this.getJson<
+      Record<string, { enabled?: boolean; scale?: number }>
+    >('generation.resolutions', {});
     const preset = presets[tier];
     if (preset && typeof preset.scale === 'number' && preset.scale > 0) {
       return preset.scale;
@@ -100,15 +105,17 @@ export class PlatformConfigService {
   }
 
   async isResolutionEnabled(tier: ResolutionTier): Promise<boolean> {
-    const presets = await this.getJson<Record<string, { enabled?: boolean; scale?: number }>>(
-      'generation.resolutions',
-      {},
-    );
+    const presets = await this.getJson<
+      Record<string, { enabled?: boolean; scale?: number }>
+    >('generation.resolutions', {});
     const preset = presets[tier];
     return preset?.enabled ?? true;
   }
 
-  async isResolutionAllowedForUser(tier: ResolutionTier, isAdmin: boolean): Promise<boolean> {
+  async isResolutionAllowedForUser(
+    tier: ResolutionTier,
+    isAdmin: boolean,
+  ): Promise<boolean> {
     if (isAdmin) return true;
     const key = `users.allow${tier.charAt(0).toUpperCase()}${tier.slice(1)}Resolution`;
     return this.getBoolean(key, true);

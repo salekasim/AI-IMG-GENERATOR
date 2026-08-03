@@ -38,7 +38,9 @@ export class ProviderAdapterFactory {
       case 'replicate':
         return this.replicate;
       default:
-        throw new Error(`No adapter registered for provider '${provider.name}'`);
+        throw new Error(
+          `No adapter registered for provider '${provider.name}'`,
+        );
     }
   }
 }
