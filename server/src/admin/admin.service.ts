@@ -9,6 +9,11 @@ import { CryptoService } from '../common/crypto.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from './audit.service';
 import { SettingsService } from './settings.service';
+import {
+  CreateProviderDto,
+  CreateProviderModelDto,
+  UpdateProviderModelDto,
+} from './dto/create-provider.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
@@ -192,6 +197,7 @@ export class AdminService {
             hidden: true,
             supportsImages: true,
             supportsVision: true,
+            supportsVideo: true,
             maxTokens: true,
             costPer1kIn: true,
             costPer1kOut: true,
@@ -209,6 +215,7 @@ export class AdminService {
       timeoutMs: p.timeoutMs,
       supportsImages: p.supportsImages,
       supportsVision: p.supportsVision,
+      supportsVideo: p.supportsVideo,
       healthStatus: p.healthStatus,
       failureStreak: p.failureStreak,
       apiKeyConfigured: !!p.apiKeyEnc,
@@ -216,6 +223,151 @@ export class AdminService {
       apiKeyMasked: p.apiKeyEnc ? this.maskKey(p.apiKeyEnc) : null,
       updatedAt: p.updatedAt,
     }));
+  }
+
+  async createProvider(actorId: string, dto: CreateProviderDto) {
+    const name = dto.name.trim().toLowerCase();
+    if (!/^[a-z0-9_-]{2,40}$/.test(name)) {
+      throw new BadRequestException(
+        'name must be 2-40 chars using a-z, 0-9, _ or -',
+      );
+    }
+    const existing = await this.prisma.aiProvider.findUnique({
+      where: { name },
+    });
+    if (existing) {
+      throw new BadRequestException(`Provider '${name}' already exists`);
+    }
+    const baseUrl = dto.baseUrl?.trim() || 'https://api.example.com/v1';
+    if (!/^https?:\/\//.test(baseUrl)) {
+      throw new BadRequestException('baseUrl must start with http(s)://');
+    }
+    const created = await this.prisma.aiProvider.create({
+      data: {
+        name,
+        displayName: dto.displayName.trim(),
+        baseUrl,
+        enabled: dto.enabled ?? true,
+        supportsImages: dto.supportsImages ?? false,
+        supportsVision: dto.supportsVision ?? false,
+        supportsVideo: dto.supportsVideo ?? false,
+        priority: dto.priority ?? 100,
+        timeoutMs: dto.timeoutMs ?? 30_000,
+        apiKeyEnc: dto.apiKey?.trim()
+          ? this.crypto.encrypt(dto.apiKey.trim())
+          : null,
+        models: dto.models?.length
+          ? {
+              create: dto.models.map((m) => ({
+                displayName: m.displayName,
+                internalName: m.internalName,
+                enabled: m.enabled ?? true,
+                supportsImages: m.supportsImages ?? false,
+                supportsVision: m.supportsVision ?? false,
+                supportsVideo: m.supportsVideo ?? false,
+                maxTokens: m.maxTokens ?? null,
+                hidden: m.hidden ?? false,
+              })),
+            }
+          : undefined,
+      },
+      include: { models: true },
+    });
+    await this.audit.log(actorId, 'providers.create', {
+      id: created.id,
+      name: created.name,
+    });
+    return {
+      id: created.id,
+      name: created.name,
+      displayName: created.displayName,
+      enabled: created.enabled,
+      apiKeyConfigured: !!created.apiKeyEnc,
+      models: created.models.length,
+    };
+  }
+
+  async createModel(
+    actorId: string,
+    providerId: string,
+    dto: CreateProviderModelDto,
+  ) {
+    const provider = await this.prisma.aiProvider.findUnique({
+      where: { id: providerId },
+    });
+    if (!provider) {
+      throw new NotFoundException('Provider not found');
+    }
+    const created = await this.prisma.aiModel.create({
+      data: {
+        providerId,
+        displayName: dto.displayName.trim(),
+        internalName: dto.internalName.trim(),
+        enabled: dto.enabled ?? true,
+        supportsImages: dto.supportsImages ?? false,
+        supportsVision: dto.supportsVision ?? false,
+        supportsVideo: dto.supportsVideo ?? false,
+        maxTokens: dto.maxTokens ?? null,
+        hidden: dto.hidden ?? false,
+      },
+    });
+    await this.audit.log(actorId, 'providers.model.create', {
+      providerId,
+      id: created.id,
+      internalName: created.internalName,
+    });
+    return created;
+  }
+
+  async updateModel(
+    actorId: string,
+    providerId: string,
+    modelId: string,
+    dto: UpdateProviderModelDto,
+  ) {
+    const model = await this.prisma.aiModel.findFirst({
+      where: { id: modelId, providerId },
+    });
+    if (!model) {
+      throw new NotFoundException('Model not found on this provider');
+    }
+    const data: Prisma.AiModelUpdateInput = {};
+    if (dto.displayName !== undefined) data.displayName = dto.displayName;
+    if (dto.internalName !== undefined) data.internalName = dto.internalName;
+    if (dto.enabled !== undefined) data.enabled = dto.enabled;
+    if (dto.supportsImages !== undefined)
+      data.supportsImages = dto.supportsImages;
+    if (dto.supportsVision !== undefined)
+      data.supportsVision = dto.supportsVision;
+    if (dto.supportsVideo !== undefined) data.supportsVideo = dto.supportsVideo;
+    if (dto.maxTokens !== undefined) data.maxTokens = dto.maxTokens;
+    if (dto.hidden !== undefined) data.hidden = dto.hidden;
+    const updated = await this.prisma.aiModel.update({
+      where: { id: modelId },
+      data,
+    });
+    await this.audit.log(actorId, 'providers.model.update', {
+      providerId,
+      id: updated.id,
+      internalName: updated.internalName,
+    });
+    return updated;
+  }
+
+  async deleteModel(actorId: string, providerId: string, modelId: string) {
+    const model = await this.prisma.aiModel.findFirst({
+      where: { id: modelId, providerId },
+    });
+    if (!model) {
+      throw new NotFoundException('Model not found on this provider');
+    }
+    await this.prisma.aiModel.delete({ where: { id: modelId } });
+    await this.audit.log(actorId, 'providers.model.delete', {
+      providerId,
+      id: modelId,
+      internalName: model.internalName,
+    });
+    return { deleted: true };
   }
 
   async listRoutingVariables() {
@@ -298,6 +450,18 @@ export class AdminService {
           ? null
           : this.crypto.encrypt(dto.apiKey.trim());
       changed.push('apiKey');
+    }
+    if (dto.supportsImages !== undefined) {
+      data.supportsImages = dto.supportsImages;
+      changed.push('supportsImages');
+    }
+    if (dto.supportsVision !== undefined) {
+      data.supportsVision = dto.supportsVision;
+      changed.push('supportsVision');
+    }
+    if (dto.supportsVideo !== undefined) {
+      data.supportsVideo = dto.supportsVideo;
+      changed.push('supportsVideo');
     }
 
     const updated = await this.prisma.aiProvider.update({

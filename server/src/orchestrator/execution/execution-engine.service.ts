@@ -21,6 +21,12 @@ import {
   RoutingSink,
 } from './routing.service';
 import { SseService } from '../sse.service';
+import { StorageService } from '../../storage/storage.service';
+import { TOOL_NODE_TYPES } from '../../tools/tool-registry';
+import {
+  ToolRunnerService,
+  ToolRunResult,
+} from '../../tools/tool-runner.service';
 import { WorkflowGraph, WorkflowNode, WorkflowEdge } from './graph.types';
 
 interface ExecutionContext {
@@ -43,6 +49,9 @@ interface ExecutionContext {
   } | null;
   userId: string | null;
   visited: Set<string>;
+  /** Per-node tool results, consumed by storage nodes. */
+  outputs: Map<string, ToolRunResult>;
+  persistedNodeIds: Set<string>;
 }
 
 export interface ExecutionStartOptions {
@@ -75,6 +84,8 @@ export class ExecutionEngine implements OnModuleInit {
     private readonly chat: ChatAdapter,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly routing: RoutingService,
+    private readonly tools: ToolRunnerService,
+    private readonly storage: StorageService,
     private readonly config: PlatformConfigService,
   ) {}
 
@@ -191,6 +202,8 @@ export class ExecutionEngine implements OnModuleInit {
       chat: null,
       userId: execution.createdBy ?? null,
       visited: new Set(),
+      outputs: new Map(),
+      persistedNodeIds: new Set(),
     };
 
     try {
@@ -593,15 +606,14 @@ export class ExecutionEngine implements OnModuleInit {
           });
           break;
         }
-        case 'imageModel': {
-          const chain = await this.resolveImageChain(node, ctx);
-          if (!chain.length) {
-            throw new Error(
-              'Image node has no routing chain — add providers/models or a routing variable',
-            );
-          }
-          const size = this.parseSize(String(config.size ?? '1024x1024'));
-          const count = Math.min(4, Math.max(1, Number(config.count ?? 1)));
+        case 'imageModel':
+        case 'iconModel':
+        case 'logoModel':
+        case 'object3dModel':
+        case 'videoModel':
+        case 'backgroundRemover':
+        case 'upscaler': {
+          const toolKey = TOOL_NODE_TYPES[node.type];
           const sink: RoutingSink = {
             emit: (event) => {
               this.sse.publish(ctx.currentId, {
@@ -625,37 +637,43 @@ export class ExecutionEngine implements OnModuleInit {
               ctx.logs.push({ ts: nowIso(), level, source, message });
             },
           };
-          const result = await this.routing.routeImage(
-            {
-              nodeId: id,
-              chain,
-              prompt: String(ctx.payload.prompt ?? 'A beautiful landscape'),
-              negativePrompt: config.negativePrompt
-                ? String(config.negativePrompt)
-                : undefined,
-              imageCount: count,
-              size,
-              seed: config.seed ? Number(config.seed) : undefined,
+          const result = await this.tools.execute({
+            toolKey,
+            nodeId: id,
+            config,
+            payload: {
+              ...ctx.payload,
+              prompt: ctx.payload.prompt ?? 'A beautiful landscape',
             },
+            userId: ctx.userId,
             sink,
-            { userId: ctx.userId },
-          );
-          ctx.images += result.images.length;
+          });
+          ctx.outputs.set(id, result);
+          ctx.images += result.items.filter((i) => i.kind === 'image').length;
           ctx.costUsd += result.costUsd;
           ctx.attempts.push(...result.attempts);
           if (result.providerUsed) ctx.providerUsed = result.providerUsed;
           if (result.modelUsed) ctx.modelUsed = result.modelUsed;
           this.sse.publish(ctx.currentId, {
+            type: 'node',
+            nodeId: id,
+            status: 'success',
+            runtimeMs: Date.now() - started,
+            provider: result.providerUsed ?? undefined,
+            model: result.modelUsed ?? undefined,
+            message: `✔ ${result.items.length} asset(s) via ${result.providerUsed}/${result.modelUsed} ($${result.costUsd.toFixed(4)})`,
+          });
+          this.sse.publish(ctx.currentId, {
             type: 'log',
             level: 'success',
             source: name,
-            message: `✔ ${result.images.length} image(s) via ${result.providerUsed}/${result.modelUsed} ($${result.costUsd.toFixed(4)})`,
+            message: `✔ ${result.items.length} asset(s) via ${result.providerUsed}/${result.modelUsed} ($${result.costUsd.toFixed(4)})`,
           });
           ctx.logs.push({
             ts: nowIso(),
             level: 'success',
             source: name,
-            message: `✔ ${result.images.length} image(s) via ${result.providerUsed}/${result.modelUsed} ($${result.costUsd.toFixed(4)})`,
+            message: `✔ ${result.items.length} asset(s) via ${result.providerUsed}/${result.modelUsed} ($${result.costUsd.toFixed(4)})`,
           });
           break;
         }
@@ -696,14 +714,100 @@ export class ExecutionEngine implements OnModuleInit {
           });
           break;
         case 'storage':
-        case 'storageNode':
+        case 'storageNode': {
+          if (!ctx.outputs.size) {
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'warn',
+              source: name,
+              message: 'storage: no tool outputs to persist yet',
+            });
+            break;
+          }
+          let saved = 0;
+          for (const [nodeId, result] of ctx.outputs) {
+            if (ctx.persistedNodeIds.has(nodeId)) continue;
+            for (const item of result.items) {
+              let buffer: Buffer | null = null;
+              let mime: string | null = null;
+              if (item.dataUrl) {
+                const [header, body] = item.dataUrl.split(',');
+                mime = (
+                  header.match(/^data:([^;]+)/)?.[1] ?? 'image/png'
+                ).trim();
+                buffer = Buffer.from(body ?? '', 'base64');
+              } else if (item.url) {
+                try {
+                  const response = await fetch(item.url, {
+                    signal: AbortSignal.timeout(60_000),
+                  });
+                  if (!response.ok) {
+                    this.sse.publish(ctx.currentId, {
+                      type: 'log',
+                      level: 'error',
+                      source: name,
+                      message: `storage: fetch ${item.url} failed (HTTP ${response.status})`,
+                    });
+                    continue;
+                  }
+                  buffer = Buffer.from(await response.arrayBuffer());
+                  mime =
+                    response.headers.get('content-type') ??
+                    (item.url.match(
+                      /\.(mp4|webm|mov|png|jpe?g|webp)(\?|$)/i,
+                    )?.[1] === 'mp4'
+                      ? 'video/mp4'
+                      : item.url.match(/\.webm(\?|$)/i)
+                        ? 'video/webm'
+                        : 'image/png');
+                } catch (error) {
+                  this.sse.publish(ctx.currentId, {
+                    type: 'log',
+                    level: 'error',
+                    source: name,
+                    message: `storage: fetch ${item.url} failed (${error instanceof Error ? error.message : String(error)})`,
+                  });
+                  continue;
+                }
+              }
+              if (!buffer) continue;
+              const ext = this.extForMime(mime);
+              try {
+                await this.storage.persist({
+                  executionId: ctx.currentId,
+                  workflowId: null,
+                  nodeId,
+                  tool: result.tool ?? 'asset',
+                  provider: result.providerUsed,
+                  model: result.modelUsed,
+                  kind: item.kind === 'video' ? 'video' : 'image',
+                  mime,
+                  buffer,
+                  ext,
+                  createdBy: ctx.userId,
+                });
+                saved += 1;
+              } catch (error) {
+                this.sse.publish(ctx.currentId, {
+                  type: 'log',
+                  level: 'error',
+                  source: name,
+                  message: `storage: persist failed (${error instanceof Error ? error.message : String(error)})`,
+                });
+              }
+            }
+            ctx.persistedNodeIds.add(nodeId);
+          }
           this.sse.publish(ctx.currentId, {
             type: 'log',
-            level: 'info',
+            level: saved ? 'success' : 'warn',
             source: name,
-            message: `saving output to ${String(config.storage ?? 'Local')}${String(config.path ?? '')}`,
+            message: saved
+              ? `✔ ${saved} asset(s) persisted to ${String(config.storage ?? 'Local')}${String(config.path ?? '')}`
+              : 'storage: nothing persisted',
           });
           break;
+        }
         case 'wait': {
           const seconds = Math.min(5, Number(config.seconds ?? 0));
           if (seconds > 0) await sleep(seconds * 1000);
@@ -738,7 +842,7 @@ export class ExecutionEngine implements OnModuleInit {
           }
         }
       }
-      if (node.type !== 'imageModel') {
+      if (!TOOL_NODE_TYPES[node.type]) {
         this.sse.publish(ctx.currentId, {
           type: 'node',
           nodeId: id,
@@ -855,6 +959,18 @@ export class ExecutionEngine implements OnModuleInit {
     const match = size.toLowerCase().match(/(\d+)\s*x\s*(\d+)/);
     if (!match) return { width: 1024, height: 1024 };
     return { width: Number(match[1]), height: Number(match[2]) };
+  }
+
+  private extForMime(mime: string | null): string {
+    const m = (mime ?? '').toLowerCase();
+    if (m.includes('jpeg') || m.includes('jpg')) return '.jpg';
+    if (m.includes('webp')) return '.webp';
+    if (m.includes('gif')) return '.gif';
+    if (m.includes('mp4')) return '.mp4';
+    if (m.includes('webm')) return '.webm';
+    if (m.includes('mov')) return '.mov';
+    if (m.includes('png')) return '.png';
+    return '.bin';
   }
 
   private evaluateIf(node: WorkflowNode, ctx: ExecutionContext): boolean {

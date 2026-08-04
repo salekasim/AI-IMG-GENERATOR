@@ -7,9 +7,29 @@ import { PrismaService } from './../src/prisma/prisma.service';
 
 const POLLINATIONS_CHAT_GRAPH = {
   nodes: [
-    { id: 'start', type: 'trigger', position: { x: 0, y: 0 }, config: { name: 'User Request' } },
-    { id: 'chat', type: 'chatModel', position: { x: 220, y: 0 }, config: { provider: 'Pollinations', model: 'openai', temperature: 0.5, maxTokens: 256 } },
-    { id: 'log', type: 'logger', position: { x: 440, y: 0 }, config: { level: 'info', message: 'chat done' } },
+    {
+      id: 'start',
+      type: 'trigger',
+      position: { x: 0, y: 0 },
+      config: { name: 'User Request' },
+    },
+    {
+      id: 'chat',
+      type: 'chatModel',
+      position: { x: 220, y: 0 },
+      config: {
+        provider: 'Pollinations',
+        model: 'openai',
+        temperature: 0.5,
+        maxTokens: 256,
+      },
+    },
+    {
+      id: 'log',
+      type: 'logger',
+      position: { x: 440, y: 0 },
+      config: { level: 'info', message: 'chat done' },
+    },
   ],
   edges: [
     { id: 'e1', source: 'start', target: 'chat' },
@@ -19,17 +39,42 @@ const POLLINATIONS_CHAT_GRAPH = {
 
 const NO_KEY_GRAPH = {
   nodes: [
-    { id: 'start', type: 'trigger', position: { x: 0, y: 0 }, config: { name: 'User Request' } },
-    { id: 'chat', type: 'chatModel', position: { x: 220, y: 0 }, config: { provider: 'OpenAI', model: 'gpt-4o-mini' } },
+    {
+      id: 'start',
+      type: 'trigger',
+      position: { x: 0, y: 0 },
+      config: { name: 'User Request' },
+    },
+    {
+      id: 'chat',
+      type: 'chatModel',
+      position: { x: 220, y: 0 },
+      config: { provider: 'OpenAI', model: 'gpt-4o-mini' },
+    },
   ],
   edges: [{ id: 'e1', source: 'start', target: 'chat' }],
 };
 
 const RATE_LIMIT_GRAPH = {
   nodes: [
-    { id: 'start', type: 'trigger', position: { x: 0, y: 0 }, config: { name: 'User Request' } },
-    { id: 'rl', type: 'rateLimiter', position: { x: 220, y: 0 }, config: { rpm: 1 } },
-    { id: 'chat', type: 'chatModel', position: { x: 440, y: 0 }, config: { provider: 'OpenAI', model: 'gpt-4o-mini' } },
+    {
+      id: 'start',
+      type: 'trigger',
+      position: { x: 0, y: 0 },
+      config: { name: 'User Request' },
+    },
+    {
+      id: 'rl',
+      type: 'rateLimiter',
+      position: { x: 220, y: 0 },
+      config: { rpm: 1 },
+    },
+    {
+      id: 'chat',
+      type: 'chatModel',
+      position: { x: 440, y: 0 },
+      config: { provider: 'OpenAI', model: 'gpt-4o-mini' },
+    },
   ],
   edges: [
     { id: 'e1', source: 'start', target: 'rl' },
@@ -37,12 +82,17 @@ const RATE_LIMIT_GRAPH = {
   ],
 };
 
-const waitFor = async <T>(poll: () => Promise<T>, done: (value: T) => boolean, timeoutMs = 30000): Promise<T> => {
+const waitFor = async <T>(
+  poll: () => Promise<T>,
+  done: (value: T) => boolean,
+  timeoutMs = 30000,
+): Promise<T> => {
   const started = Date.now();
   for (;;) {
     const value = await poll();
     if (done(value)) return value;
-    if (Date.now() - started > timeoutMs) throw new Error('Timed out waiting for condition');
+    if (Date.now() - started > timeoutMs)
+      throw new Error('Timed out waiting for condition');
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 };
@@ -55,7 +105,11 @@ const executeUntilDone = async (
   workflowId: string,
   payload: Record<string, unknown>,
   attempts = 4,
-): Promise<{ status: string; error: string | null; [key: string]: unknown }> => {
+): Promise<{
+  status: string;
+  error: string | null;
+  [key: string]: unknown;
+}> => {
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const started = await request(server)
       .post(`/v1/orchestrator/workflows/${workflowId}/execute`)
@@ -72,11 +126,15 @@ const executeUntilDone = async (
           .expect(200);
         return detail.body;
       },
-      (e: { status: string }) => e.status !== 'pending' && e.status !== 'running',
+      (e: { status: string }) =>
+        e.status !== 'pending' && e.status !== 'running',
     );
 
     if (execution.status === 'success') return execution;
-    if (execution.status === 'error' && UPSTREAM_ERROR.test(execution.error ?? '')) {
+    if (
+      execution.status === 'error' &&
+      UPSTREAM_ERROR.test(execution.error ?? '')
+    ) {
       // Pollinations free tier is occasionally flaky — retry the run, keep assertions strict.
       await new Promise((resolve) => setTimeout(resolve, attempt * 2000));
       continue;
@@ -144,24 +202,38 @@ describe('Orchestrator Execution (e2e)', () => {
   afterAll(async () => {
     await prisma.workflowExecution
       .deleteMany({
-        where: { workflowId: { in: [workflowId, noKeyWorkflowId, rateLimitWorkflowId] } },
+        where: {
+          workflowId: {
+            in: [workflowId, noKeyWorkflowId, rateLimitWorkflowId],
+          },
+        },
       })
       .catch(() => {});
     await prisma.workflow
-      .deleteMany({ where: { id: { in: [workflowId, noKeyWorkflowId, rateLimitWorkflowId] } } })
+      .deleteMany({
+        where: {
+          id: { in: [workflowId, noKeyWorkflowId, rateLimitWorkflowId] },
+        },
+      })
       .catch(() => {});
     await prisma.user.deleteMany({ where: { email } }).catch(() => {});
     await app.close();
   });
 
   it('rejects execution when the workflow is disabled', async () => {
-    await prisma.workflow.update({ where: { id: workflowId }, data: { enabled: false } });
+    await prisma.workflow.update({
+      where: { id: workflowId },
+      data: { enabled: false },
+    });
     await request(app.getHttpServer())
       .post(`/v1/orchestrator/workflows/${workflowId}/execute`)
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ payload: { prompt: 'hi' } })
       .expect(400);
-    await prisma.workflow.update({ where: { id: workflowId }, data: { enabled: true } });
+    await prisma.workflow.update({
+      where: { id: workflowId },
+      data: { enabled: true },
+    });
   });
 
   it('executes a pollinations chat flow to success with token accounting', async () => {
@@ -176,7 +248,9 @@ describe('Orchestrator Execution (e2e)', () => {
     expect(execution.error).toBeNull();
     expect(execution.tokensIn).toBeGreaterThan(0);
     expect(execution.tokensOut).toBeGreaterThan(0);
-    expect((execution.output as { chat?: { text?: string } } | null)?.chat?.text).toBeTruthy();
+    expect(
+      (execution.output as { chat?: { text?: string } } | null)?.chat?.text,
+    ).toBeTruthy();
     expect(execution.durationMs).toBeGreaterThan(0);
   }, 90_000);
 
@@ -196,7 +270,8 @@ describe('Orchestrator Execution (e2e)', () => {
           .expect(200);
         return detail.body;
       },
-      (e: { status: string }) => e.status !== 'pending' && e.status !== 'running',
+      (e: { status: string }) =>
+        e.status !== 'pending' && e.status !== 'running',
     );
 
     expect(execution.status).toBe('error');
@@ -239,7 +314,9 @@ describe('Orchestrator Execution (e2e)', () => {
         (res) => {
           res.on('data', (chunk: Buffer) => {
             const text = chunk.toString('utf8');
-            events.push(...text.split('\n').filter((l) => l.startsWith('data:')));
+            events.push(
+              ...text.split('\n').filter((l) => l.startsWith('data:')),
+            );
             if (text.includes('"type":"done"')) {
               res.destroy();
               resolve();
@@ -250,7 +327,11 @@ describe('Orchestrator Execution (e2e)', () => {
         },
       );
       req.on('error', reject);
-      setTimeout(() => reject(new Error('SSE stream did not deliver done event in time')), 30000);
+      setTimeout(
+        () =>
+          reject(new Error('SSE stream did not deliver done event in time')),
+        30000,
+      );
     });
 
     await streamDone.catch(() => {

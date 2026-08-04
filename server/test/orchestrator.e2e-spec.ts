@@ -57,9 +57,7 @@ describe('Orchestrator Workflows (e2e)', () => {
       .get('/v1/orchestrator/workflows')
       .set('Authorization', `Bearer ${adminToken}`)
       .expect(200);
-    const names = response.body.map(
-      (w: { name: string }) => w.name,
-    );
+    const names = response.body.map((w: { name: string }) => w.name);
     expect(names).toContain('Premium routing');
     expect(names).toContain('Image failover chain');
     expect(names).toContain('Cost optimization');

@@ -9,3 +9,5 @@ dist
 server.out.log
 server.err.log
 coverage
+# Local fallback asset storage (primary driver is Cloudinary)
+uploads

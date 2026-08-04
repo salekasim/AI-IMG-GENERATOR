@@ -76,6 +76,7 @@ model AiProvider {
   supportsStreaming     Boolean @default(true)
   supportsVision        Boolean @default(false)
   supportsImages        Boolean @default(true)
+  supportsVideo         Boolean @default(false)
   supportsAudio         Boolean @default(false)
   supportsFunctionCalling Boolean @default(true)
   supportsJsonMode      Boolean @default(true)
@@ -103,6 +104,7 @@ model AiModel {
   temperatureLimit Float? @default(2)
   supportsImages      Boolean @default(false)
   supportsVision      Boolean @default(false)
+  supportsVideo       Boolean @default(false)
   supportsAudio       Boolean @default(false)
   supportsToolCalls   Boolean @default(true)
   supportsStreaming   Boolean @default(true)
@@ -207,6 +209,55 @@ model AuditLog {
   actor     User?    @relation(fields: [actorId], references: [id])
 }
 
+/**
+ * Pluggable tool registry — every node type that does real work maps to a
+ * Tool row. Admin can enable/disable tools and change their default provider
+ * binding without touching code. New tool kinds (background remover, upscaler,
+ * video…) are added here, then matched by `key` in the execution engine.
+ */
+model Tool {
+  id             String   @id @default(cuid())
+  key            String   @unique // image | icon | logo | object3d | video | backgroundRemover | upscaler | chat | ...
+  name           String
+  category       String   @default("AI") // AI | Logic | Storage | System
+  description    String?
+  icon           String   @default("🧰")
+  color          String   @default("bg-blue-500/15 text-blue-400 border-blue-500/30")
+  capability     String   @default("image") // image | video | mask | audio | chat | text
+  requiresInput  Boolean  @default(false) // true when the tool consumes an uploaded file (e.g. background remover)
+  enabled        Boolean  @default(true)
+  paramSchema    Json     @default("{}") // field definitions rendered in the admin properties panel
+  defaultBinding Json     @default("[]") // ordered [{ provider, model }] fallback steps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+/**
+ * Real output of a storage node — every persisted asset gets a row so the
+ * admin panel can browse stored files and executions can reference them.
+ */
+model StorageAsset {
+  id          String              @id @default(cuid())
+  executionId String?
+  execution   WorkflowExecution?  @relation(fields: [executionId], references: [id], onDelete: SetNull)
+  workflowId  String?
+  nodeId      String?
+  tool        String              @default("image")
+  provider    String?
+  model       String?
+  kind        String              @default("image") // image | video | audio | file
+  mime        String?
+  url         String? // public URL when an object store is configured
+  localPath   String?
+  cloudinaryPublicId String? // cloudinary asset id for secure delete
+  sizeBytes   Int                 @default(0)
+  createdBy   String?
+  createdAt   DateTime            @default(now())
+
+  @@index([createdAt])
+  @@index([executionId])
+}
+
 model Workflow {
   id          String   @id @default(cuid())
   name        String
@@ -245,6 +296,7 @@ model WorkflowExecution {
   error      String?
   startedAt  DateTime @default(now())
   finishedAt DateTime?
+  assets     StorageAsset[]
 
   @@index([workflowId, startedAt])
   @@index([projectId, startedAt])

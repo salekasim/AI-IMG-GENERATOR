@@ -36,6 +36,15 @@ export const PLATFORM_SETTINGS: PlatformSettingDef[] = [
   { key: 'provider.cooldownMs', type: 'number', fallback: 30_000 },
   { key: 'routing.maxChainDepth', type: 'number', fallback: 4 },
   { key: 'execution.timeoutMs', type: 'number', fallback: 300_000 },
+  // Storage (storage node / asset persistence)
+  { key: 'storage.driver', type: 'string', fallback: 'auto' }, // local | cloudinary | auto
+  { key: 'storage.localPath', type: 'string', fallback: '' },
+  { key: 'storage.cloudinaryFolder', type: 'string', fallback: '' },
+  { key: 'storage.bucket', type: 'string', fallback: '' },
+  { key: 'storage.endpoint', type: 'string', fallback: '' },
+  { key: 'storage.accessKey', type: 'string', fallback: '' },
+  { key: 'storage.secretKey', type: 'string', fallback: '' },
+  { key: 'storage.publicUrl', type: 'string', fallback: '' },
 ];
 
 const RESOLUTION_KEYS = ['high', 'medium', 'low'] as const;

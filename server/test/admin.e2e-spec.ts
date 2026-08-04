@@ -22,7 +22,9 @@ describe('Admin (e2e)', () => {
   });
 
   afterAll(async () => {
-    await prisma.auditLog.deleteMany({ where: { actorId: null } }).catch(() => {});
+    await prisma.auditLog
+      .deleteMany({ where: { actorId: null } })
+      .catch(() => {});
     await app.close();
   });
 

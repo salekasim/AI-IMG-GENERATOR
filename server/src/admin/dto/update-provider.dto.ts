@@ -14,6 +14,18 @@ export class UpdateProviderDto {
   enabled?: boolean;
 
   @IsOptional()
+  @IsBoolean()
+  supportsImages?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  supportsVision?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  supportsVideo?: boolean;
+
+  @IsOptional()
   @IsInt()
   priority?: number;
 

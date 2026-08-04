@@ -17,6 +17,11 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { clampInt } from '../common/num.util';
 import { AdminService } from './admin.service';
+import {
+  CreateProviderDto,
+  CreateProviderModelDto,
+  UpdateProviderModelDto,
+} from './dto/create-provider.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpdateSettingDto } from './dto/update-setting.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -54,6 +59,42 @@ export class AdminController {
   @Get('routing-variables')
   listRoutingVariables() {
     return this.admin.listRoutingVariables();
+  }
+
+  @Post('providers')
+  createProvider(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateProviderDto,
+  ) {
+    return this.admin.createProvider(user.userId, dto);
+  }
+
+  @Post('providers/:id/models')
+  createModel(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Body() dto: CreateProviderModelDto,
+  ) {
+    return this.admin.createModel(user.userId, id, dto);
+  }
+
+  @Patch('providers/:id/models/:modelId')
+  updateModel(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Param('modelId') modelId: string,
+    @Body() dto: UpdateProviderModelDto,
+  ) {
+    return this.admin.updateModel(user.userId, id, modelId, dto);
+  }
+
+  @Delete('providers/:id/models/:modelId')
+  deleteModel(
+    @CurrentUser() user: AuthUser,
+    @Param('id') id: string,
+    @Param('modelId') modelId: string,
+  ) {
+    return this.admin.deleteModel(user.userId, id, modelId);
   }
 
   @Get('analytics')
