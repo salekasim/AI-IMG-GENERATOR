@@ -374,6 +374,8 @@ model Workflow {
   projectId   String?
   project     Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   webhookUrl  String? // Discord / custom URL notified on client execution finish
+  clientEnabled   Boolean  @default(false) // publish as a client model
+  clientModelName String? // public model name shown on the client website
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   executions  WorkflowExecution[]

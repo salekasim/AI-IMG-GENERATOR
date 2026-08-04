@@ -48,6 +48,8 @@ export class WorkflowService implements OnModuleInit {
         version: true,
         webhookUrl: true,
         projectId: true,
+        clientEnabled: true,
+        clientModelName: true,
         createdAt: true,
         updatedAt: true,
         graph: true,
@@ -90,6 +92,10 @@ export class WorkflowService implements OnModuleInit {
     if (dto.enabled !== undefined) data.enabled = dto.enabled;
     if (dto.webhookUrl !== undefined) data.webhookUrl = dto.webhookUrl;
     if (dto.webhookUrlClear === true) data.webhookUrl = null;
+    if (dto.clientEnabled !== undefined) data.clientEnabled = dto.clientEnabled;
+    if (dto.clientModelName !== undefined) {
+      data.clientModelName = dto.clientModelName.trim() ? dto.clientModelName.trim() : null;
+    }
     if (dto.graph !== undefined) {
       this.validateGraph(dto.graph);
       data.graph = dto.graph as Prisma.InputJsonValue;

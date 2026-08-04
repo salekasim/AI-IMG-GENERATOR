@@ -73,6 +73,11 @@ export class ClientController {
     };
   }
 
+  @Get(':secretKey/models')
+  async models(@Param('secretKey') secretKey: string) {
+    return this.client.modelsFor(secretKey);
+  }
+
   @Get(':secretKey/executions/:id')
   async detail(@Param('secretKey') secretKey: string, @Param('id') id: string) {
     const project = await this.client.resolveProject(secretKey);

@@ -34,6 +34,15 @@ export class UpdateWorkflowDto {
 
   @IsOptional()
   webhookUrlClear?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  clientEnabled?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  clientModelName?: string;
 }
 
 export class DuplicateWorkflowDto {
