@@ -227,6 +227,8 @@ export class AdminService {
       enabled: p.enabled,
       priority: p.priority,
       timeoutMs: p.timeoutMs,
+      maxRpm: p.maxRpm,
+      maxTpm: p.maxTpm,
       supportsImages: p.supportsImages,
       supportsVision: p.supportsVision,
       supportsVideo: p.supportsVideo,
@@ -458,6 +460,14 @@ export class AdminService {
     if (dto.timeoutMs !== undefined) {
       data.timeoutMs = dto.timeoutMs;
       changed.push('timeoutMs');
+    }
+    if (dto.maxRpm !== undefined) {
+      data.maxRpm = dto.maxRpm;
+      changed.push('maxRpm');
+    }
+    if (dto.maxTpm !== undefined) {
+      data.maxTpm = dto.maxTpm;
+      changed.push('maxTpm');
     }
     if (dto.apiKey !== undefined) {
       data.apiKeyEnc =

@@ -35,6 +35,16 @@ export class UpdateProviderDto {
   timeoutMs?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxRpm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxTpm?: number;
+
+  @IsOptional()
   @IsString()
   apiKey?: string;
 }

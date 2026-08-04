@@ -89,7 +89,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           id: 'flux',
           type: 'imageModel',
           position: { x: 320, y: 300 },
-          config: { provider: 'Flux', model: 'flux', size: '1:1', count: 1 },
+          config: { name: 'Image Tools · Flux', provider: 'Flux', model: 'flux', size: '1:1', count: 1 },
         },
         {
           id: 'retry1',
@@ -101,7 +101,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           id: 'ideogram',
           type: 'imageModel',
           position: { x: 920, y: 300 },
-          config: { provider: 'Ideogram', model: 'V2', size: '1:1', count: 1 },
+          config: { name: 'Image Tools · Ideogram', provider: 'Ideogram', model: 'V2', size: '1:1', count: 1 },
         },
         {
           id: 'retry2',
@@ -114,6 +114,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           type: 'imageModel',
           position: { x: 1520, y: 300 },
           config: {
+            name: 'Image Tools · GPT Image',
             provider: 'OpenAI',
             model: 'gpt-image-1',
             size: '1:1',
@@ -124,7 +125,7 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
           id: 'save',
           type: 'storageNode',
           position: { x: 1820, y: 300 },
-          config: { storage: 'Local', path: 'Pictures/Intellix AI/' },
+          config: { name: 'Save · Local', storage: 'Local', path: 'Pictures/Intellix AI/' },
         },
       ],
       edges: [
