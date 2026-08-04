@@ -3,6 +3,7 @@ import { AiProvider } from '@prisma/client';
 import { FalAdapter } from './fal.adapter';
 import { FireworksAdapter } from './fireworks.adapter';
 import { GeminiAdapter } from './gemini.adapter';
+import { GenericOpenAIAdapter } from './generic-openai.adapter';
 import { OpenAIAdapter } from './openai.adapter';
 import { PollinationsAdapter } from './pollinations.adapter';
 import { ProviderAdapter } from './provider.adapter';
@@ -21,6 +22,7 @@ export class ProviderAdapterFactory {
     private readonly fireworks: FireworksAdapter,
     private readonly replicate: ReplicateAdapter,
     private readonly fal: FalAdapter,
+    private readonly custom: GenericOpenAIAdapter,
   ) {}
 
   forProvider(provider: AiProvider): ProviderAdapter {
@@ -42,9 +44,9 @@ export class ProviderAdapterFactory {
       case 'fal-image':
         return this.fal;
       default:
-        throw new Error(
-          `No adapter registered for provider '${provider.name}'`,
-        );
+        // Custom providers (created from the builder) use the generic
+        // OpenAI-compatible image contract.
+        return this.custom;
     }
   }
 }

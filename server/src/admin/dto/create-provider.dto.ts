@@ -82,8 +82,22 @@ export class CreateProviderDto {
   timeoutMs?: number;
 
   @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxRpm?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxTpm?: number;
+
+  @IsOptional()
   @IsString()
   apiKey?: string;
+
+  @IsOptional()
+  @IsString()
+  imageEndpoint?: string;
 
   @IsOptional()
   @IsArray()

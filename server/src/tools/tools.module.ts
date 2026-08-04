@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { PrismaModule } from '../prisma/prisma.module';
 import { RoutingModule } from '../orchestrator/execution/routing.module';
 import { StorageModule } from '../storage/storage.module';
 import { ChatAdapter } from '../orchestrator/execution/chat.adapter';
@@ -8,7 +9,7 @@ import { ToolsService } from './tools.service';
 import { VideoAdapter } from './video.adapter';
 
 @Module({
-  imports: [StorageModule, RoutingModule],
+  imports: [PrismaModule, StorageModule, RoutingModule],
   controllers: [ToolsController],
   providers: [ToolsService, ToolRunnerService, VideoAdapter, ChatAdapter],
   exports: [ToolsService, ToolRunnerService],

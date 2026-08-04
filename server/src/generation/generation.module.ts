@@ -5,6 +5,7 @@ import { UsersModule } from '../users/users.module';
 import { FalAdapter } from './adapters/fal.adapter';
 import { FireworksAdapter } from './adapters/fireworks.adapter';
 import { GeminiAdapter } from './adapters/gemini.adapter';
+import { GenericOpenAIAdapter } from './adapters/generic-openai.adapter';
 import { OpenAIAdapter } from './adapters/openai.adapter';
 import { PollinationsAdapter } from './adapters/pollinations.adapter';
 import { ProviderAdapterFactory } from './adapters/provider-adapter.factory';
@@ -28,6 +29,7 @@ import { GenerationService } from './generation.service';
     FireworksAdapter,
     ReplicateAdapter,
     FalAdapter,
+    GenericOpenAIAdapter,
   ],
 })
 export class GenerationModule {}

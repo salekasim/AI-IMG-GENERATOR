@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 
 export interface ChatCallOptions {
   provider: string;
@@ -95,6 +96,8 @@ const estimateTokens = (text: string): number =>
 
 @Injectable()
 export class ChatAdapter {
+  constructor(private readonly prisma: PrismaService) {}
+
   async call(options: ChatCallOptions): Promise<ChatCallResult> {
     const provider = normalizeProvider(options.provider);
     const messages: Array<{ role: string; content: string }> = [];
@@ -103,15 +106,28 @@ export class ChatAdapter {
     }
     messages.push({ role: 'user', content: options.prompt });
 
-    const baseUrl = BASE_URLS[provider];
-    if (!baseUrl) {
+    // Custom providers (created from the builder) resolve their endpoint from
+    // the AiProvider row; known providers fall back to the built-in map.
+    const row = await this.prisma.aiProvider.findUnique({
+      where: { name: options.provider.trim().toLowerCase() },
+    });
+    let endpoint: string | null = null;
+    if (row) {
+      endpoint = `${row.baseUrl.replace(/\/+$/, '')}${
+        row.chatEndpoint ?? '/chat/completions'
+      }`;
+    } else {
+      const fallback = BASE_URLS[provider];
+      if (fallback) endpoint = `${fallback}/chat/completions`;
+    }
+    if (!endpoint) {
       throw new Error(
         `Chat provider '${options.provider}' is not supported by the M2 executor`,
       );
     }
 
     const apiKey = options.apiKey?.trim() || null;
-    if (provider !== 'pollinations' && !apiKey) {
+    if (provider !== 'pollinations' && !row && !apiKey) {
       throw new Error(
         `No API key configured for chat provider '${options.provider}' — add one in Providers or on the node`,
       );
@@ -133,7 +149,14 @@ export class ChatAdapter {
     let lastError: unknown;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       try {
-        return await this.post(baseUrl, body, model, apiKey, options, provider);
+        return await this.post(
+          endpoint,
+          body,
+          model,
+          apiKey,
+          options,
+          provider,
+        );
       } catch (error) {
         lastError = error;
         const retryable =
@@ -148,7 +171,7 @@ export class ChatAdapter {
   }
 
   private async post(
-    baseUrl: string,
+    endpoint: string,
     body: Record<string, unknown>,
     model: string | undefined,
     apiKey: string | null,
@@ -159,7 +182,7 @@ export class ChatAdapter {
     const timeout = setTimeout(() => controller.abort(), 30000);
 
     try {
-      const response = await fetch(`${baseUrl}/chat/completions`, {
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

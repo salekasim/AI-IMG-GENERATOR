@@ -3,6 +3,7 @@ import { PrismaModule } from '../../prisma/prisma.module';
 import { FalAdapter } from '../../generation/adapters/fal.adapter';
 import { FireworksAdapter } from '../../generation/adapters/fireworks.adapter';
 import { GeminiAdapter } from '../../generation/adapters/gemini.adapter';
+import { GenericOpenAIAdapter } from '../../generation/adapters/generic-openai.adapter';
 import { OpenAIAdapter } from '../../generation/adapters/openai.adapter';
 import { PollinationsAdapter } from '../../generation/adapters/pollinations.adapter';
 import { ProviderAdapterFactory } from '../../generation/adapters/provider-adapter.factory';
@@ -28,6 +29,7 @@ import { RulesService } from './rules.service';
     FireworksAdapter,
     ReplicateAdapter,
     FalAdapter,
+    GenericOpenAIAdapter,
     RulesService,
     RoutingService,
   ],

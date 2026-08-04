@@ -280,6 +280,11 @@ export class AdminService {
         supportsVideo: dto.supportsVideo ?? false,
         priority: dto.priority ?? 100,
         timeoutMs: dto.timeoutMs ?? 30_000,
+        maxRpm: dto.maxRpm ?? 60,
+        maxTpm: dto.maxTpm ?? 100000,
+        imageEndpoint:
+          dto.imageEndpoint ??
+          (dto.supportsImages ? '/images/generations' : null),
         apiKeyEnc: dto.apiKey?.trim()
           ? this.crypto.encrypt(dto.apiKey.trim())
           : null,
