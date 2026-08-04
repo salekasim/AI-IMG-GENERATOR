@@ -15,6 +15,7 @@ import { OrchestratorModule } from './orchestrator/workflow.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProjectsModule } from './projects/projects.module';
 import { ProvidersModule } from './providers/providers.module';
+import { RegistryModule } from './registry/registry.module';
 import { StorageModule } from './storage/storage.module';
 import { ToolsModule } from './tools/tools.module';
 import { UsageModule } from './usage/usage.module';
@@ -28,6 +29,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     AuthModule,
     ProvidersModule,
+    RegistryModule,
     UsageModule,
     GenerationModule,
     AdminModule,

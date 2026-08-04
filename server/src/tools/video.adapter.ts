@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
+import { CryptoService } from '../common/crypto.service';
 
 export interface VideoRequest {
   prompt: string;
@@ -26,16 +27,19 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export class VideoAdapter {
   private readonly logger = new Logger(VideoAdapter.name);
 
+  constructor(private readonly crypto: CryptoService) {}
+
   async generate(
     provider: AiProvider,
     req: VideoRequest,
   ): Promise<VideoResult> {
-    const apiKey = provider.apiKeyEnc ?? null;
-    if (!apiKey) {
+    if (!provider.apiKeyEnc) {
       throw new Error(
         `Video provider '${provider.name}' has no API key configured — add it in Admin → Providers`,
       );
     }
+    // Keys are stored AES-256-GCM encrypted; decrypt before any request.
+    const apiKey = this.crypto.decrypt(provider.apiKeyEnc);
     if (!provider.supportsVideo) {
       throw new Error(`Provider '${provider.name}' does not support video`);
     }
@@ -54,7 +58,9 @@ export class VideoAdapter {
     }
 
     // fal-style flow (fal, runway via fal, cloudflare)
-    const submitUrl = `${base}/${model}`;
+    const submitUrl = provider.name.startsWith('fal')
+      ? `${base}/fal-ai/${model}/run`
+      : `${base}/${model}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 30_000);
     let submitted: any;

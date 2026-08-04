@@ -22,12 +22,13 @@ import {
 } from './routing.service';
 import { SseService } from '../sse.service';
 import { StorageService } from '../../storage/storage.service';
-import { TOOL_NODE_TYPES } from '../../tools/tool-registry';
+import { TOOL_NODE_TYPES, toolKeyForNodeType } from '../../tools/tool-registry';
 import {
   ToolRunnerService,
   ToolRunResult,
 } from '../../tools/tool-runner.service';
 import { WorkflowGraph, WorkflowNode, WorkflowEdge } from './graph.types';
+import { RegistryService } from '../../registry/registry.service';
 
 interface ExecutionContext {
   currentId: string;
@@ -52,7 +53,15 @@ interface ExecutionContext {
   /** Per-node tool results, consumed by storage nodes. */
   outputs: Map<string, ToolRunResult>;
   persistedNodeIds: Set<string>;
+  /** Per-node model bindings emitted by modelNode/modelRoute nodes. */
+  bindings: Map<string, ModelBinding>;
+  /** Edge list per target node, used for dataflow resolution. */
+  incoming: Map<string, WorkflowEdge[]>;
 }
+
+export type ModelBinding =
+  | { provider: string; model: string }
+  | { routeId: string };
 
 export interface ExecutionStartOptions {
   source?: 'admin' | 'client';
@@ -87,6 +96,7 @@ export class ExecutionEngine implements OnModuleInit {
     private readonly tools: ToolRunnerService,
     private readonly storage: StorageService,
     private readonly config: PlatformConfigService,
+    private readonly registry: RegistryService,
   ) {}
 
   async onModuleInit() {
@@ -119,6 +129,19 @@ export class ExecutionEngine implements OnModuleInit {
     if (!workflow) throw new NotFoundException('Workflow not found');
     if (!workflow.enabled) {
       throw new BadRequestException(`Workflow '${workflow.name}' is disabled`);
+    }
+
+    // Phase 4: typed-port validation — unknown node types and incompatible
+    // edge ports are hard errors before anything is enqueued.
+    const validation = this.registry.validateGraph(
+      workflow.graph as unknown as WorkflowGraph,
+    );
+    if (!validation.valid) {
+      throw new BadRequestException({
+        message: `Workflow '${workflow.name}' graph is invalid`,
+        code: 'INVALID_GRAPH',
+        errors: validation.errors,
+      });
     }
 
     if (opts?.webhookUrl) {
@@ -204,6 +227,8 @@ export class ExecutionEngine implements OnModuleInit {
       visited: new Set(),
       outputs: new Map(),
       persistedNodeIds: new Set(),
+      bindings: new Map(),
+      incoming: new Map(),
     };
 
     try {
@@ -360,10 +385,11 @@ export class ExecutionEngine implements OnModuleInit {
   private async interpret(graph: WorkflowGraph, ctx: ExecutionContext) {
     const nodes = new Map(graph.nodes.map((n) => [n.id, n]));
     const outgoing = this.outgoingMap(graph.edges);
-    const incoming = new Map<string, number>();
+    const incoming = new Map<string, WorkflowEdge[]>();
     graph.edges.forEach((e) => {
-      incoming.set(e.target, (incoming.get(e.target) ?? 0) + 1);
+      incoming.set(e.target, [...(incoming.get(e.target) ?? []), e]);
     });
+    ctx.incoming = incoming;
 
     const entries = graph.nodes
       .filter((n) => !incoming.has(n.id))
@@ -575,8 +601,16 @@ export class ExecutionEngine implements OnModuleInit {
           break;
         }
         case 'chatModel': {
-          const provider = String(config.provider ?? 'Pollinations');
-          const model = String(config.model ?? 'openai');
+          let provider = String(config.provider ?? 'Pollinations');
+          let model = String(config.model ?? 'openai');
+          const binding = this.bindingFor(id, ctx);
+          if (binding) {
+            const chain = await this.modelBindingChain(binding);
+            if (chain.length) {
+              provider = chain[0].provider;
+              model = chain[0].model;
+            }
+          }
           const apiKey = await this.resolveKey(provider, config.apiKey);
           const result = await this.chat.call({
             provider,
@@ -612,8 +646,16 @@ export class ExecutionEngine implements OnModuleInit {
         case 'object3dModel':
         case 'videoModel':
         case 'backgroundRemover':
-        case 'upscaler': {
-          const toolKey = TOOL_NODE_TYPES[node.type];
+        case 'upscaler':
+        case 'imageGeneration':
+        case 'iconGeneration':
+        case 'logoGeneration':
+        case 'object3dGeneration':
+        case 'videoGeneration':
+        case 'backgroundRemoval':
+        case 'imageUpscaling':
+        case 'textGeneration': {
+          const toolKey = toolKeyForNodeType(node.type) ?? 'image';
           const sink: RoutingSink = {
             emit: (event) => {
               this.sse.publish(ctx.currentId, {
@@ -637,14 +679,56 @@ export class ExecutionEngine implements OnModuleInit {
               ctx.logs.push({ ts: nowIso(), level, source, message });
             },
           };
+          // Phase 5 dataflow: a connected modelNode/modelRoute binding
+          // overrides the node's config chain / default binding.
+          const binding = this.bindingFor(id, ctx);
+          let effectiveConfig = config;
+          if (binding) {
+            const boundChain = await this.modelBindingChain(binding);
+            if (boundChain.length) {
+              effectiveConfig = { ...config, chain: boundChain };
+              this.sse.publish(ctx.currentId, {
+                type: 'log',
+                level: 'info',
+                source: name,
+                message: `model binding → ${boundChain.map((s) => `${s.provider}/${s.model}`).join(' → ')}`,
+              });
+            }
+          }
+          // Phase 9 dataflow: upstream artifacts/text flow into the tool call
+          // through the node's incoming ports (input/image/video/audio/prompt).
+          const upstreamImage = this.upstreamArtifact(id, ctx, 'image');
+          const upstreamVideo = this.upstreamArtifact(id, ctx, 'video');
+          const upstreamText = this.upstreamText(id, ctx);
+          const toolPayload: Record<string, unknown> = {
+            ...ctx.payload,
+            prompt: ctx.payload.prompt ?? 'A beautiful landscape',
+          };
+          const promptPort = (ctx.incoming.get(id) ?? []).some(
+            (e) => e.targetHandle === 'prompt',
+          );
+          if (upstreamText && promptPort) toolPayload.prompt = upstreamText;
+          if (upstreamImage?.dataUrl) toolPayload.inputImage = upstreamImage.dataUrl;
+          if (upstreamVideo?.url) toolPayload.inputVideo = upstreamVideo.url;
+          if (upstreamText && !promptPort) toolPayload.inputText = upstreamText;
+          if (upstreamImage || upstreamVideo || upstreamText) {
+            const parts = [
+              upstreamImage ? 'image' : null,
+              upstreamVideo ? 'video' : null,
+              upstreamText ? 'text' : null,
+            ].filter(Boolean);
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'info',
+              source: name,
+              message: `dataflow: ← ${parts.join(', ')} from upstream node(s)`,
+            });
+          }
           const result = await this.tools.execute({
             toolKey,
             nodeId: id,
-            config,
-            payload: {
-              ...ctx.payload,
-              prompt: ctx.payload.prompt ?? 'A beautiful landscape',
-            },
+            config: effectiveConfig,
+            payload: toolPayload,
             userId: ctx.userId,
             sink,
           });
@@ -654,6 +738,16 @@ export class ExecutionEngine implements OnModuleInit {
           ctx.attempts.push(...result.attempts);
           if (result.providerUsed) ctx.providerUsed = result.providerUsed;
           if (result.modelUsed) ctx.modelUsed = result.modelUsed;
+          const textItem = result.items.find((i) => i.kind === 'text');
+          if (textItem?.text) {
+            ctx.chat = {
+              text: textItem.text,
+              model: result.modelUsed ?? '',
+              provider: result.providerUsed ?? '',
+              tokensIn: result.tokensIn ?? 0,
+              tokensOut: result.tokensOut ?? 0,
+            };
+          }
           this.sse.publish(ctx.currentId, {
             type: 'node',
             nodeId: id,
@@ -715,88 +809,138 @@ export class ExecutionEngine implements OnModuleInit {
           break;
         case 'storage':
         case 'storageNode': {
-          if (!ctx.outputs.size) {
-            this.sse.publish(ctx.currentId, {
-              type: 'log',
-              level: 'warn',
-              source: name,
-              message: 'storage: no tool outputs to persist yet',
-            });
-            break;
+          // Phase 5 dataflow: a storage node with incoming edges persists ONLY
+          // artifacts from connected source nodes, filtered by the target
+          // handle (image/video/audio/file) when present. No incoming edges →
+          // legacy behavior: persist every tool output of the execution.
+          const inEdges = ctx.incoming.get(id) ?? [];
+          const connectedSources = new Map<string, WorkflowEdge[]>();
+          for (const edge of inEdges) {
+            connectedSources.set(edge.source, [
+              ...(connectedSources.get(edge.source) ?? []),
+              edge,
+            ]);
           }
-          let saved = 0;
-          for (const [nodeId, result] of ctx.outputs) {
-            if (ctx.persistedNodeIds.has(nodeId)) continue;
-            for (const item of result.items) {
-              let buffer: Buffer | null = null;
-              let mime: string | null = null;
-              if (item.dataUrl) {
-                const [header, body] = item.dataUrl.split(',');
-                mime = (
-                  header.match(/^data:([^;]+)/)?.[1] ?? 'image/png'
-                ).trim();
-                buffer = Buffer.from(body ?? '', 'base64');
-              } else if (item.url) {
-                try {
-                  const response = await fetch(item.url, {
-                    signal: AbortSignal.timeout(60_000),
-                  });
-                  if (!response.ok) {
-                    this.sse.publish(ctx.currentId, {
-                      type: 'log',
-                      level: 'error',
-                      source: name,
-                      message: `storage: fetch ${item.url} failed (HTTP ${response.status})`,
-                    });
-                    continue;
-                  }
-                  buffer = Buffer.from(await response.arrayBuffer());
-                  mime =
-                    response.headers.get('content-type') ??
-                    (item.url.match(
-                      /\.(mp4|webm|mov|png|jpe?g|webp)(\?|$)/i,
-                    )?.[1] === 'mp4'
-                      ? 'video/mp4'
-                      : item.url.match(/\.webm(\?|$)/i)
-                        ? 'video/webm'
-                        : 'image/png');
-                } catch (error) {
+          const storageRoute = config.storage ? String(config.storage) : null;
+          const storagePath = config.path ? String(config.path) : null;
+
+          const persistItem = async (
+            sourceId: string,
+            result: ToolRunResult,
+            item: ToolRunResult['items'][number],
+          ) => {
+            let buffer: Buffer | null = null;
+            let mime: string | null = null;
+            if (item.dataUrl) {
+              const [header, body] = item.dataUrl.split(',');
+              mime = (header.match(/^data:([^;]+)/)?.[1] ?? 'image/png').trim();
+              buffer = Buffer.from(body ?? '', 'base64');
+            } else if (item.url) {
+              try {
+                const response = await fetch(item.url, {
+                  signal: AbortSignal.timeout(60_000),
+                });
+                if (!response.ok) {
                   this.sse.publish(ctx.currentId, {
                     type: 'log',
                     level: 'error',
                     source: name,
-                    message: `storage: fetch ${item.url} failed (${error instanceof Error ? error.message : String(error)})`,
+                    message: `storage: fetch ${item.url} failed (HTTP ${response.status})`,
                   });
-                  continue;
+                  return;
                 }
-              }
-              if (!buffer) continue;
-              const ext = this.extForMime(mime);
-              try {
-                await this.storage.persist({
-                  executionId: ctx.currentId,
-                  workflowId: null,
-                  nodeId,
-                  tool: result.tool ?? 'asset',
-                  provider: result.providerUsed,
-                  model: result.modelUsed,
-                  kind: item.kind === 'video' ? 'video' : 'image',
-                  mime,
-                  buffer,
-                  ext,
-                  createdBy: ctx.userId,
-                });
-                saved += 1;
+                buffer = Buffer.from(await response.arrayBuffer());
+                mime =
+                  response.headers.get('content-type') ??
+                  (item.url.match(
+                    /\.(mp4|webm|mov|png|jpe?g|webp)(\?|$)/i,
+                  )?.[1] === 'mp4'
+                    ? 'video/mp4'
+                    : item.url.match(/\.webm(\?|$)/i)
+                      ? 'video/webm'
+                      : 'image/png');
               } catch (error) {
                 this.sse.publish(ctx.currentId, {
                   type: 'log',
                   level: 'error',
                   source: name,
-                  message: `storage: persist failed (${error instanceof Error ? error.message : String(error)})`,
+                  message: `storage: fetch ${item.url} failed (${error instanceof Error ? error.message : String(error)})`,
                 });
+                return;
               }
             }
-            ctx.persistedNodeIds.add(nodeId);
+            if (!buffer) return;
+            const ext = this.extForMime(mime);
+            try {
+              await this.storage.persist({
+                executionId: ctx.currentId,
+                workflowId: null,
+                nodeId: sourceId,
+                tool: result.tool ?? 'asset',
+                provider: result.providerUsed,
+                model: result.modelUsed,
+                kind: item.kind === 'video' ? 'video' : 'image',
+                mime,
+                buffer,
+                ext,
+                createdBy: ctx.userId,
+                route: storageRoute,
+                path: storagePath,
+              });
+              return true;
+            } catch (error) {
+              this.sse.publish(ctx.currentId, {
+                type: 'log',
+                level: 'error',
+                source: name,
+                message: `storage: persist failed (${error instanceof Error ? error.message : String(error)})`,
+              });
+              return;
+            }
+          };
+
+          let saved = 0;
+          if (connectedSources.size > 0) {
+            for (const [sourceId, edges] of connectedSources) {
+              const result = ctx.outputs.get(sourceId);
+              if (!result || ctx.persistedNodeIds.has(sourceId)) continue;
+              let targetAll = false;
+              const targetKinds = new Set<string>();
+              for (const edge of edges) {
+                const handle = edge.targetHandle ?? '';
+                if (!handle) {
+                  targetAll = true;
+                  break;
+                }
+                if (['image', 'video', 'audio', 'file'].includes(handle)) {
+                  targetKinds.add(handle);
+                }
+              }
+              for (const item of result.items) {
+                if (!targetAll && !targetKinds.has(item.kind)) continue;
+                const ok = await persistItem(sourceId, result, item);
+                if (ok) saved += 1;
+              }
+              ctx.persistedNodeIds.add(sourceId);
+            }
+          } else {
+            if (!ctx.outputs.size) {
+              this.sse.publish(ctx.currentId, {
+                type: 'log',
+                level: 'warn',
+                source: name,
+                message: 'storage: no tool outputs to persist yet',
+              });
+              break;
+            }
+            for (const [sourceId, result] of ctx.outputs) {
+              if (ctx.persistedNodeIds.has(sourceId)) continue;
+              for (const item of result.items) {
+                const ok = await persistItem(sourceId, result, item);
+                if (ok) saved += 1;
+              }
+              ctx.persistedNodeIds.add(sourceId);
+            }
           }
           this.sse.publish(ctx.currentId, {
             type: 'log',
@@ -822,6 +966,82 @@ export class ExecutionEngine implements OnModuleInit {
         case 'delay': {
           const ms = Math.min(5000, Number(config.ms ?? 0));
           if (ms > 0) await sleep(ms);
+          break;
+        }
+        // ── Phase 5 dataflow: provider/model binding nodes ────────────────
+        case 'modelNode': {
+          const provider = String(config.provider ?? '').trim();
+          const model = String(config.model ?? '').trim();
+          const upstream = this.bindingFor(id, ctx);
+          if (provider && model) {
+            ctx.bindings.set(id, { provider, model });
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'success',
+              source: name,
+              message: `model bound: ${provider}/${model}`,
+            });
+          } else if (upstream) {
+            ctx.bindings.set(id, upstream);
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'info',
+              source: name,
+              message:
+                'provider' in upstream
+                  ? `model passthrough: ${upstream.provider}/${upstream.model}`
+                  : 'route passthrough',
+            });
+          } else {
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'warn',
+              source: name,
+              message: 'modelNode has no provider/model and no upstream binding',
+            });
+          }
+          break;
+        }
+        case 'modelRoute': {
+          const routeId = String(config.routeId ?? '').trim();
+          const upstream = this.bindingFor(id, ctx);
+          if (routeId) {
+            const route = await this.prisma.modelRoute.findUnique({
+              where: { id: routeId },
+            });
+            if (route?.enabled) {
+              ctx.bindings.set(id, { routeId });
+              const steps = await this.modelBindingChain({ routeId });
+              this.sse.publish(ctx.currentId, {
+                type: 'log',
+                level: 'success',
+                source: name,
+                message: `route bound: '${route.name}' → ${steps.map((s) => `${s.provider}/${s.model}`).join(' → ') || 'no usable steps'}`,
+              });
+            } else {
+              this.sse.publish(ctx.currentId, {
+                type: 'log',
+                level: 'warn',
+                source: name,
+                message: `route '${routeId}' missing or disabled`,
+              });
+            }
+          } else if (upstream) {
+            ctx.bindings.set(id, upstream);
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'info',
+              source: name,
+              message: 'route passthrough',
+            });
+          } else {
+            this.sse.publish(ctx.currentId, {
+              type: 'log',
+              level: 'warn',
+              source: name,
+              message: 'modelRoute has no routeId and no upstream binding',
+            });
+          }
           break;
         }
         default: {
@@ -900,6 +1120,109 @@ export class ExecutionEngine implements OnModuleInit {
     if (p === 'ideogram') return 'ideogram-v2';
     if (p === 'pollinations') return model.trim() || 'flux';
     return model.trim();
+  }
+
+  /**
+   * Phase 5 dataflow: resolve a model binding to an ordered provider/model
+   * chain. A `routeId` binding expands the admin ModelRoute's steps (JSON,
+   * priority-ordered); a direct binding is a single-step chain.
+   */
+  private async modelBindingChain(
+    binding: ModelBinding,
+  ): Promise<Array<{ provider: string; model: string }>> {
+    if ('provider' in binding) {
+      return [{ provider: binding.provider, model: binding.model }];
+    }
+    const route = await this.prisma.modelRoute.findUnique({
+      where: { id: binding.routeId },
+    });
+    if (!route || !route.enabled) return [];
+    const steps = Array.isArray(route.steps) ? route.steps : [];
+    return (steps as Array<Record<string, unknown>>)
+      .sort(
+        (a, b) =>
+          (Number(a.priority ?? 0) || 0) - (Number(b.priority ?? 0) || 0),
+      )
+      .filter(
+        (s) =>
+          typeof s?.provider === 'string' &&
+          s.provider.trim() !== '' &&
+          typeof s?.model === 'string' &&
+          s.model.trim() !== '',
+      )
+      .map((s) => ({
+        provider: String(s.provider).trim(),
+        model: String(s.model).trim(),
+      }));
+  }
+
+  /**
+   * Phase 9 dataflow: find the model binding a node receives. Direct
+   * modelNode/modelRoute edges win; otherwise the binding is inherited from
+   * upstream nodes (so a chain like modelNode → imageGeneration →
+   * backgroundRemoval gives every step the same model binding). Bindings only
+   * ever exist on modelNode/modelRoute rows, so any incoming edge can carry
+   * inheritance; the `visited` set guards against cycles.
+   */
+  private bindingFor(
+    nodeId: string,
+    ctx: ExecutionContext,
+    seen?: Set<string>,
+  ): ModelBinding | null {
+    const visited = seen ?? new Set<string>();
+    if (visited.has(nodeId)) return null;
+    visited.add(nodeId);
+    const inEdges = ctx.incoming.get(nodeId) ?? [];
+    for (const edge of inEdges) {
+      const binding = ctx.bindings.get(edge.source);
+      if (binding) return binding;
+      const inherited = this.bindingFor(edge.source, ctx, visited);
+      if (inherited) return inherited;
+    }
+    return null;
+  }
+
+  /**
+   * Phase 9 dataflow: upstream tool results that flow into a node through its
+   * incoming edges. `targetHandle` filters to the matching input port
+   * (input/image/video/audio/prompt) when the edge is handle-qualified.
+   */
+  private upstreamItems(
+    nodeId: string,
+    ctx: ExecutionContext,
+  ): Array<{ edge: WorkflowEdge; result: ToolRunResult }> {
+    const items: Array<{ edge: WorkflowEdge; result: ToolRunResult }> = [];
+    for (const edge of ctx.incoming.get(nodeId) ?? []) {
+      const result = ctx.outputs.get(edge.source);
+      if (result) items.push({ edge, result });
+    }
+    return items;
+  }
+
+  private upstreamArtifact(
+    nodeId: string,
+    ctx: ExecutionContext,
+    kind: 'image' | 'video' | 'audio',
+  ): ToolRunResult['items'][number] | null {
+    for (const { edge, result } of this.upstreamItems(nodeId, ctx)) {
+      const handle = edge.targetHandle ?? '';
+      if (handle && handle !== 'input' && handle !== kind) continue;
+      const item = result.items.find((i) => i.kind === kind && (i.dataUrl || i.url));
+      if (item) return item;
+    }
+    return null;
+  }
+
+  private upstreamText(nodeId: string, ctx: ExecutionContext): string | null {
+    for (const { edge, result } of this.upstreamItems(nodeId, ctx)) {
+      const handle = edge.targetHandle ?? '';
+      if (handle && handle !== 'prompt' && handle !== 'text' && handle !== 'data') {
+        continue;
+      }
+      const item = result.items.find((i) => i.kind === 'text' && i.text);
+      if (item?.text) return item.text;
+    }
+    return null;
   }
 
   /** Resolve the ordered model chain for an image node: explicit chain → routing variable → legacy single step. */

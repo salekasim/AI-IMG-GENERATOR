@@ -163,7 +163,11 @@ export class ChatAdapter {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          // Pollinations is keyless by design — it 402-rejects authenticated
+          // requests (legacy text API deprecation).
+          ...(apiKey && provider !== 'pollinations'
+            ? { Authorization: `Bearer ${apiKey}` }
+            : {}),
         },
         body: JSON.stringify(body),
         signal: controller.signal,

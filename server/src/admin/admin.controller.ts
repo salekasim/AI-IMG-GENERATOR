@@ -22,6 +22,8 @@ import {
   CreateProviderModelDto,
   UpdateProviderModelDto,
 } from './dto/create-provider.dto';
+import { CreateRouteDto, UpdateRouteDto } from './dto/route.dto';
+import { CreateCredentialDto } from './dto/route.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpdateSettingDto } from './dto/update-setting.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -100,6 +102,67 @@ export class AdminController {
   @Get('analytics')
   analytics(@Query('days') days?: string) {
     return this.admin.analytics(clampInt(days, 30, 1, 365));
+  }
+
+  // ── Model routes (fallback groups) ─────────────────────────────────────
+  @Get('routes')
+  listRoutes() {
+    return this.admin.listRoutes();
+  }
+
+  @Post('routes')
+  createRoute(@CurrentUser() user: AuthUser, @Body() dto: CreateRouteDto) {
+    return this.admin.createRoute(user.userId, dto);
+  }
+
+  @Patch('routes/:id')
+  updateRoute(@CurrentUser() user: AuthUser, @Param('id') id: string, @Body() dto: UpdateRouteDto) {
+    return this.admin.updateRoute(user.userId, id, dto);
+  }
+
+  @Delete('routes/:id')
+  async deleteRoute(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    const removed = await this.admin.deleteRoute(user.userId, id);
+    return { removed };
+  }
+
+  // ── Provider credentials (key pool / rotation) ─────────────────────────
+  @Post('providers/:id/credentials')
+  createCredential(
+    @CurrentUser() user: AuthUser,
+    @Param('id') providerId: string,
+    @Body() dto: CreateCredentialDto,
+  ) {
+    return this.admin.createCredential(user.userId, providerId, dto);
+  }
+
+  @Patch('providers/:id/credentials/:credentialId')
+  updateCredential(
+    @CurrentUser() user: AuthUser,
+    @Param('id') providerId: string,
+    @Param('credentialId') credentialId: string,
+    @Body()
+    dto: { label?: string; enabled?: boolean; priority?: number; apiKey?: string },
+  ) {
+    return this.admin.updateCredential(user.userId, providerId, credentialId, dto);
+  }
+
+  @Delete('providers/:id/credentials/:credentialId')
+  async deleteCredential(
+    @CurrentUser() user: AuthUser,
+    @Param('id') providerId: string,
+    @Param('credentialId') credentialId: string,
+  ) {
+    const removed = await this.admin.deleteCredential(user.userId, providerId, credentialId);
+    return { removed };
+  }
+
+  @Post('providers/:id/credentials/:credentialId/test')
+  testCredential(
+    @Param('id') providerId: string,
+    @Param('credentialId') credentialId: string,
+  ) {
+    return this.admin.testCredential(providerId, credentialId);
   }
 
   @Patch('providers/:id')

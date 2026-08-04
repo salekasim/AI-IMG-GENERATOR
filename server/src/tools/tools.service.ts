@@ -1,5 +1,5 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { Prisma, Tool } from '@prisma/client';
+import { Prisma, Capability } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { TOOL_SEEDS } from './tool-registry';
 
@@ -15,7 +15,20 @@ export class ToolsService implements OnModuleInit {
 
   private async seedDefaults() {
     for (const seed of TOOL_SEEDS) {
-      await this.prisma.tool.upsert({
+      const existing = await this.prisma.capability.findUnique({
+        where: { key: seed.key },
+      });
+      const shouldRefreshBinding =
+        !existing ||
+        !existing.defaultChain ||
+        !Array.isArray(existing.defaultChain) ||
+        (existing.defaultChain as Array<{ provider?: string; model?: string }>)
+          .length === 0 ||
+        JSON.stringify(
+          (existing.defaultChain as Array<{ provider?: string; model?: string }>)
+            .map((step) => `${step.provider}/${step.model}`),
+        ) === JSON.stringify(['pollinations/flux']);
+      await this.prisma.capability.upsert({
         where: { key: seed.key },
         update: {
           name: seed.name,
@@ -25,7 +38,13 @@ export class ToolsService implements OnModuleInit {
           color: seed.color,
           capability: seed.capability,
           requiresInput: seed.requiresInput ?? false,
-          // Never overwrite admin-tuned binding on restart
+          hasRuntime: seed.hasRuntime ?? true,
+          // Ports/defaults are registry-owned metadata — refresh every boot.
+          inputPorts: (seed.inputPorts ?? []) as unknown as Prisma.InputJsonValue,
+          outputPorts: (seed.outputPorts ?? []) as unknown as Prisma.InputJsonValue,
+          defaults: (seed.defaults ?? {}) as unknown as Prisma.InputJsonValue,
+          // Refresh the binding only when it was never customized
+          ...(shouldRefreshBinding ? { defaultChain: seed.defaultChain } : {}),
         },
         create: {
           key: seed.key,
@@ -37,31 +56,35 @@ export class ToolsService implements OnModuleInit {
           capability: seed.capability,
           requiresInput: seed.requiresInput ?? false,
           enabled: true,
+          hasRuntime: seed.hasRuntime ?? true,
+          inputPorts: (seed.inputPorts ?? []) as unknown as Prisma.InputJsonValue,
+          outputPorts: (seed.outputPorts ?? []) as unknown as Prisma.InputJsonValue,
           paramSchema: seed.params as unknown as Prisma.InputJsonValue,
-          defaultBinding: seed.defaultBinding,
+          defaults: (seed.defaults ?? {}) as unknown as Prisma.InputJsonValue,
+          defaultChain: seed.defaultChain,
         },
       });
     }
   }
 
   list() {
-    return this.prisma.tool.findMany({ orderBy: { key: 'asc' } });
+    return this.prisma.capability.findMany({ orderBy: { key: 'asc' } });
   }
 
   listEnabled() {
-    return this.prisma.tool.findMany({
+    return this.prisma.capability.findMany({
       where: { enabled: true },
       orderBy: { key: 'asc' },
     });
   }
 
-  async findByKey(key: string): Promise<Tool | null> {
-    return this.prisma.tool.findUnique({ where: { key } });
+  async findByKey(key: string): Promise<Capability | null> {
+    return this.prisma.capability.findUnique({ where: { key } });
   }
 
   /**
-   * Ordered provider/model binding for a tool: explicit node chain →
-   * tool defaultBinding → empty (caller falls back to routing variable /
+   * Ordered provider/model binding for a Capability: explicit node chain →
+   * Capability defaultChain → empty (caller falls back to routing variable /
    * legacy single provider fields).
    */
   async resolveBinding(
@@ -82,9 +105,9 @@ export class ToolsService implements OnModuleInit {
           model: String(s.model).trim(),
         }));
     }
-    const tool = await this.findByKey(toolKey);
-    const binding = Array.isArray(tool?.defaultBinding)
-      ? (tool.defaultBinding as Array<{ provider?: string; model?: string }>)
+    const Capability = await this.findByKey(toolKey);
+    const binding = Array.isArray(Capability?.defaultChain)
+      ? (Capability.defaultChain as Array<{ provider?: string; model?: string }>)
       : [];
     return binding
       .filter(
@@ -109,11 +132,11 @@ export class ToolsService implements OnModuleInit {
       color?: string;
       enabled?: boolean;
       paramSchema?: unknown;
-      defaultBinding?: unknown;
+      defaultChain?: unknown;
     },
   ) {
-    const tool = await this.prisma.tool.findUnique({ where: { key } });
-    if (!tool) return null;
+    const Capability = await this.prisma.capability.findUnique({ where: { key } });
+    if (!Capability) return null;
     const update: Record<string, unknown> = {};
     if (data.name !== undefined) update.name = data.name;
     if (data.description !== undefined) update.description = data.description;
@@ -121,9 +144,9 @@ export class ToolsService implements OnModuleInit {
     if (data.color !== undefined) update.color = data.color;
     if (data.enabled !== undefined) update.enabled = data.enabled;
     if (data.paramSchema !== undefined) update.paramSchema = data.paramSchema;
-    if (data.defaultBinding !== undefined) {
-      update.defaultBinding = data.defaultBinding;
+    if (data.defaultChain !== undefined) {
+      update.defaultChain = data.defaultChain;
     }
-    return this.prisma.tool.update({ where: { key }, data: update });
+    return this.prisma.capability.update({ where: { key }, data: update });
   }
 }

@@ -4,6 +4,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { PrismaModule } from '../prisma/prisma.module';
 import { StorageModule } from '../storage/storage.module';
 import { ToolsModule } from '../tools/tools.module';
+import { RegistryModule } from '../registry/registry.module';
 import { UsersModule } from '../users/users.module';
 import { CryptoService } from '../common/crypto.service';
 import { ExecutionController } from './execution/execution.controller';
@@ -22,6 +23,7 @@ import { WorkflowService } from './workflow.service';
     ToolsModule,
     StorageModule,
     RoutingModule,
+    RegistryModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({

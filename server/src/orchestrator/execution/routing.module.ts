@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { PrismaModule } from '../../prisma/prisma.module';
+import { FalAdapter } from '../../generation/adapters/fal.adapter';
 import { FireworksAdapter } from '../../generation/adapters/fireworks.adapter';
 import { GeminiAdapter } from '../../generation/adapters/gemini.adapter';
 import { OpenAIAdapter } from '../../generation/adapters/openai.adapter';
@@ -26,6 +27,7 @@ import { RulesService } from './rules.service';
     TogetherAdapter,
     FireworksAdapter,
     ReplicateAdapter,
+    FalAdapter,
     RulesService,
     RoutingService,
   ],

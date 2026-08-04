@@ -1,5 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
+import { CryptoService } from '../common/crypto.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 interface ProviderSeed {
@@ -29,11 +30,14 @@ interface ProviderSeed {
   supportsStreaming?: boolean;
   supportsVision?: boolean;
   supportsImages?: boolean;
+  supportsVideo?: boolean;
   supportsAudio?: boolean;
   supportsFunctionCalling?: boolean;
   supportsJsonMode?: boolean;
   supportsReasoning?: boolean;
   enabled?: boolean;
+  /** Env var name holding the API key (seeded encrypted, never overwritten). */
+  apiKeyEnv?: string;
 }
 
 interface ModelSeed {
@@ -48,6 +52,7 @@ interface ModelSeed {
   temperatureLimit?: number;
   supportsImages?: boolean;
   supportsVision?: boolean;
+  supportsVideo?: boolean;
   supportsAudio?: boolean;
   supportsToolCalls?: boolean;
   supportsStreaming?: boolean;
@@ -444,6 +449,45 @@ const PROVIDER_SEEDS: ProviderSeed[] = [
     supportsImages: false,
     enabled: false,
   },
+  {
+    name: 'fal-image',
+    displayName: 'Fal · Image',
+    icon: '🦅',
+    baseUrl: 'https://queue.fal.run',
+    imageEndpoint: '/',
+    priority: 4,
+    weight: 90,
+    timeoutMs: 120000,
+    retryCount: 3,
+    cooldownMs: 30000,
+    costPer1kIn: 0,
+    costPer1kOut: 0,
+    maxRpm: 60,
+    maxTpm: 100000,
+    supportsImages: true,
+    supportsVideo: false,
+    enabled: false,
+    apiKeyEnv: 'FAL_IMAGE_API_KEY',
+  },
+  {
+    name: 'fal-video',
+    displayName: 'Fal · Video',
+    icon: '🎬',
+    baseUrl: 'https://queue.fal.run',
+    priority: 5,
+    weight: 90,
+    timeoutMs: 300000,
+    retryCount: 3,
+    cooldownMs: 30000,
+    costPer1kIn: 0,
+    costPer1kOut: 0,
+    maxRpm: 30,
+    maxTpm: 100000,
+    supportsImages: false,
+    supportsVideo: true,
+    enabled: false,
+    apiKeyEnv: 'FAL_VIDEO_API_KEY',
+  },
 ];
 
 const MODEL_SEEDS: ModelSeed[] = [
@@ -590,6 +634,51 @@ const MODEL_SEEDS: ModelSeed[] = [
     priority: 2,
     supportsImages: true,
   },
+  {
+    provider: 'fal-image',
+    displayName: 'Flux Pro',
+    internalName: 'flux-pro',
+    costPer1kIn: 0.03,
+    costPer1kOut: 0,
+    priority: 1,
+    supportsImages: true,
+  },
+  {
+    provider: 'fal-image',
+    displayName: 'Flux Dev',
+    internalName: 'flux-dev',
+    costPer1kIn: 0.025,
+    costPer1kOut: 0,
+    priority: 2,
+    supportsImages: true,
+  },
+  {
+    provider: 'fal-image',
+    displayName: 'Flux Kontext',
+    internalName: 'flux-kontext',
+    costPer1kIn: 0.02,
+    costPer1kOut: 0,
+    priority: 3,
+    supportsImages: true,
+  },
+  {
+    provider: 'fal-video',
+    displayName: 'Minimax Video',
+    internalName: 'minimax-video-01',
+    costPer1kIn: 0,
+    costPer1kOut: 0,
+    priority: 1,
+    supportsVideo: true,
+  },
+  {
+    provider: 'fal-video',
+    displayName: 'Veo 3',
+    internalName: 'veo3-fal',
+    costPer1kIn: 0,
+    costPer1kOut: 0,
+    priority: 2,
+    supportsVideo: true,
+  },
 ];
 
 const VARIABLE_SEEDS: Array<{ name: string; description: string }> = [
@@ -612,7 +701,10 @@ const VARIABLE_SEEDS: Array<{ name: string; description: string }> = [
 
 @Injectable()
 export class ProvidersService implements OnModuleInit {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly crypto: CryptoService,
+  ) {}
 
   async onModuleInit() {
     await this.ensureDefaults();
@@ -620,6 +712,13 @@ export class ProvidersService implements OnModuleInit {
 
   private async ensureDefaults() {
     for (const seed of PROVIDER_SEEDS) {
+      let apiKeyEnc: string | null = null;
+      if (seed.apiKeyEnv) {
+        const envKey = process.env[seed.apiKeyEnv];
+        if (envKey) {
+          apiKeyEnc = this.crypto.encrypt(envKey);
+        }
+      }
       await this.prisma.aiProvider.upsert({
         where: { name: seed.name },
         update: {
@@ -656,8 +755,10 @@ export class ProvidersService implements OnModuleInit {
           supportsVision: seed.supportsVision ?? false,
           supportsImages: seed.supportsImages ?? true,
           supportsAudio: seed.supportsAudio ?? false,
+          supportsVideo: seed.supportsVideo ?? false,
           supportsFunctionCalling: seed.supportsFunctionCalling ?? true,
           supportsJsonMode: seed.supportsJsonMode ?? true,
+          apiKeyEnc,
           enabled: seed.enabled ?? true,
           healthStatus: 'unknown',
           failureStreak: 0,
@@ -690,6 +791,7 @@ export class ProvidersService implements OnModuleInit {
           supportsImages: seed.supportsImages ?? false,
           supportsVision: seed.supportsVision ?? false,
           supportsAudio: seed.supportsAudio ?? false,
+          supportsVideo: seed.supportsVideo ?? false,
           supportsToolCalls: seed.supportsToolCalls ?? true,
           supportsStreaming: seed.supportsStreaming ?? true,
           supportsJson: seed.supportsJson ?? true,

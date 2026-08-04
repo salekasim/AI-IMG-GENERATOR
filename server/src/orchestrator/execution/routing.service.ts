@@ -21,6 +21,8 @@ export interface RoutingAttempt {
   latencyMs: number;
   error?: string;
   costUsd: number;
+  /** Credential pool label used for the attempt, when one was used. */
+  credentialLabel?: string;
 }
 
 export interface ImageRoutingRequest {
@@ -84,6 +86,37 @@ export class RoutingService {
     const p = provider.trim().toLowerCase();
     if (['flux', 'ideogram'].includes(p)) return 'pollinations';
     return p;
+  }
+
+  /**
+   * Ordered credential pool for a provider row. Empty when the provider only
+   * has the legacy single `apiKeyEnc`.
+   */
+  async credentialPoolFor(row: AiProvider) {
+    return this.prisma.providerCredential.findMany({
+      where: { providerId: row.id, enabled: true },
+      orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  /**
+   * Best available credential for a provider (by priority / lowest streak).
+   * Falls back to the provider's own apiKeyEnc when no pool exists.
+   * Used by adapter paths outside routeImage (e.g. video).
+   */
+  async bestCredentialFor(providerName: string): Promise<{
+    apiKeyEnc: string | null;
+    label: string | null;
+  }> {
+    const row = await this.prisma.aiProvider.findUnique({
+      where: { name: this.aliasFor(providerName) },
+    });
+    if (!row) return { apiKeyEnc: null, label: null };
+    const pool = await this.credentialPoolFor(row);
+    if (pool.length) {
+      return { apiKeyEnc: pool[0].apiKeyEnc, label: pool[0].label };
+    }
+    return { apiKeyEnc: row.apiKeyEnc, label: null };
   }
 
   private isInCooldown(row: AiProvider, fallbackCooldownMs: number): boolean {
@@ -351,122 +384,181 @@ export class RoutingService {
       sink.emit({
         nodeId: req.nodeId,
         status: 'retrying',
-        attempt: attemptNumber,
+        attempt: attempts.length + 1,
         provider: rowName,
         model: step.model,
         latencyMs: 0,
         message: `trying ${rowName}/${step.model}`,
       });
       sink.log('info', rowName, `→ attempt ${attemptNumber}: ${step.model}`);
-      try {
-        const images = await adapter.generate(row, {
-          prompt: req.prompt,
-          negativePrompt: req.negativePrompt,
-          imageCount: req.imageCount,
-          size: req.size,
-          seed: req.seed,
-          model: step.model,
-        });
-        const latencyMs = Date.now() - startedAt;
-        const costUsd = images.length * adapter.costPerImage;
-        attempts.push(
-          this.record(
-            req.nodeId,
-            rowName,
-            step.model,
-            attemptNumber,
-            'success',
-            latencyMs,
-            undefined,
-            costUsd,
-          ),
-        );
-        sink.emit({
-          nodeId: req.nodeId,
-          status: 'success',
-          attempt: attemptNumber,
-          provider: rowName,
-          model: step.model,
-          latencyMs,
-          message: `ok in ${latencyMs}ms`,
-        });
-        sink.log(
-          'success',
-          rowName,
-          `✔ ${step.model} generated ${images.length} image(s) in ${latencyMs}ms ($${costUsd.toFixed(4)})`,
-        );
-        await this.recordUsage(
-          row,
-          ctx?.userId,
-          req.prompt,
-          images.length,
-          costUsd,
-          'success',
-        );
-        await this.recover(row.id, latencyMs);
-        return {
-          images,
-          attempts,
-          providerUsed: rowName,
-          modelUsed: step.model,
-          costUsd: this.sumCost(attempts),
+
+      // Credential rotation: try every enabled credential of this provider
+      // (by priority) before declaring the step failed and moving to the next
+      // provider in the chain. No pool → legacy single apiKeyEnc.
+      const pool = await this.credentialPoolFor(row);
+      const candidates: Array<{
+        id: string | null;
+        apiKeyEnc: string | null;
+        label: string | null;
+      }> = pool.length
+        ? pool.map((c) => ({ id: c.id, apiKeyEnc: c.apiKeyEnc, label: c.label }))
+        : [{ id: null, apiKeyEnc: row.apiKeyEnc, label: null }];
+
+      let stepFailedMessage: string | null = null;
+      let stepFailedLatency = 0;
+      for (const candidate of candidates) {
+        const candidateAttempt = attempts.length + 1;
+        const providerForCall: AiProvider = {
+          ...row,
+          apiKeyEnc: candidate.apiKeyEnc,
         };
-      } catch (error) {
-        const latencyMs = Date.now() - startedAt;
-        const message = error instanceof Error ? error.message : String(error);
-        attempts.push(
-          this.record(
-            req.nodeId,
-            rowName,
-            step.model,
-            attemptNumber,
-            'error',
-            latencyMs,
-            message,
-          ),
-        );
+        const candidateStart = Date.now();
         sink.emit({
           nodeId: req.nodeId,
           status: 'retrying',
-          attempt: attemptNumber,
+          attempt: candidateAttempt,
           provider: rowName,
           model: step.model,
-          latencyMs,
-          message: `failed — ${message.slice(0, 120)}`,
+          latencyMs: 0,
+          message: candidate.label
+            ? `trying ${rowName}/${step.model} (${candidate.label})`
+            : `trying ${rowName}/${step.model}`,
         });
-        sink.log(
-          'error',
-          rowName,
-          `✗ ${step.model} failed in ${latencyMs}ms: ${message.slice(0, 200)}`,
-        );
-        lastError.push(message);
-        await this.recordUsage(row, ctx?.userId, req.prompt, 0, 0, 'error');
-        await this.markFailure(row.id);
-
-        const injected = await this.rules.applyFailover({
-          chain: steps,
-          failedIndex: i,
-          provider: rowName,
-          model: step.model,
-        });
-        if (injected.length) {
-          steps.splice(i + 1, 0, ...injected);
+        if (candidate.label) {
           sink.log(
             'info',
-            'rules',
-            `rule failover → ${injected.map((s) => s.provider + '/' + s.model).join(', ')}`,
+            rowName,
+            `→ attempt ${candidateAttempt}: ${step.model} via credential '${candidate.label}'`,
           );
-          if (attempts.length > req.chain.length + 4) {
+        }
+        try {
+          const images = await adapter.generate(providerForCall, {
+            prompt: req.prompt,
+            negativePrompt: req.negativePrompt,
+            imageCount: req.imageCount,
+            size: req.size,
+            seed: req.seed,
+            model: step.model,
+          });
+          const latencyMs = Date.now() - candidateStart;
+          const costUsd = images.length * adapter.costPerImage;
+          attempts.push(
+            this.record(
+              req.nodeId,
+              rowName,
+              step.model,
+              candidateAttempt,
+              'success',
+              latencyMs,
+              undefined,
+              costUsd,
+              candidate.label ?? undefined,
+            ),
+          );
+          sink.emit({
+            nodeId: req.nodeId,
+            status: 'success',
+            attempt: candidateAttempt,
+            provider: rowName,
+            model: step.model,
+            latencyMs,
+            message: `ok in ${latencyMs}ms`,
+          });
+          sink.log(
+            'success',
+            rowName,
+            `✔ ${step.model} generated ${images.length} image(s) in ${latencyMs}ms ($${costUsd.toFixed(4)})${candidate.label ? ` via '${candidate.label}'` : ''}`,
+          );
+          if (candidate.label && candidate.id) {
+            await this.credentialRecover(candidate.id);
+          }
+          await this.recordUsage(
+            row,
+            ctx?.userId,
+            req.prompt,
+            images.length,
+            costUsd,
+            'success',
+          );
+          await this.recover(row.id, latencyMs);
+          return {
+            images,
+            attempts,
+            providerUsed: rowName,
+            modelUsed: step.model,
+            costUsd: this.sumCost(attempts),
+          };
+        } catch (error) {
+          const latencyMs = Date.now() - candidateStart;
+          const message = error instanceof Error ? error.message : String(error);
+          attempts.push(
+            this.record(
+              req.nodeId,
+              rowName,
+              step.model,
+              candidateAttempt,
+              'error',
+              latencyMs,
+              message,
+              0,
+              candidate.label ?? undefined,
+            ),
+          );
+          sink.emit({
+            nodeId: req.nodeId,
+            status: 'retrying',
+            attempt: candidateAttempt,
+            provider: rowName,
+            model: step.model,
+            latencyMs,
+            message: `failed — ${message.slice(0, 120)}`,
+          });
+          if (candidate.label && candidate.id) {
+            await this.credentialFail(candidate.id, message);
             sink.log(
               'error',
-              'rules',
-              'failover budget exceeded — stopping chain',
+              rowName,
+              `✗ credential '${candidate.label}' failed in ${latencyMs}ms: ${message.slice(0, 160)}`,
             );
-            break;
+          } else {
+            sink.log(
+              'error',
+              rowName,
+              `✗ ${step.model} failed in ${latencyMs}ms: ${message.slice(0, 200)}`,
+            );
           }
+          lastError.push(message);
+          stepFailedMessage = message;
+          stepFailedLatency = latencyMs;
         }
-        i += 1;
       }
+
+      // Every credential (or the single legacy key) failed for this step.
+      await this.recordUsage(row, ctx?.userId, req.prompt, 0, 0, 'error');
+      await this.markFailure(row.id);
+      const injected = await this.rules.applyFailover({
+        chain: steps,
+        failedIndex: i,
+        provider: rowName,
+        model: step.model,
+      });
+      if (injected.length) {
+        steps.splice(i + 1, 0, ...injected);
+        sink.log(
+          'info',
+          'rules',
+          `rule failover → ${injected.map((s) => s.provider + '/' + s.model).join(', ')}`,
+        );
+        if (attempts.length > req.chain.length + 4) {
+          sink.log(
+            'error',
+            'rules',
+            'failover budget exceeded — stopping chain',
+          );
+          break;
+        }
+      }
+      i += 1;
     }
 
     const summary = lastError.join(' | ') || 'no usable providers in chain';
@@ -509,6 +601,7 @@ export class RoutingService {
     latencyMs: number,
     error?: string,
     costUsd = 0,
+    credentialLabel?: string,
   ): RoutingAttempt {
     return {
       nodeId,
@@ -519,6 +612,7 @@ export class RoutingService {
       latencyMs,
       error,
       costUsd,
+      credentialLabel,
     };
   }
 
@@ -562,6 +656,42 @@ export class RoutingService {
           healthStatus: latencyMs > 5000 ? 'degraded' : 'healthy',
         },
       });
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async credentialRecover(credentialId: string) {
+    try {
+      await this.prisma.providerCredential.update({
+        where: { id: credentialId },
+        data: { failureStreak: 0, lastError: null, lastUsedAt: new Date() },
+      });
+    } catch {
+      // best-effort
+    }
+  }
+
+  private async credentialFail(credentialId: string, message: string) {
+    try {
+      const row = await this.prisma.providerCredential.findUnique({
+        where: { id: credentialId },
+      });
+      if (!row) return;
+      const streak = row.failureStreak + 1;
+      await this.prisma.providerCredential.update({
+        where: { id: credentialId },
+        data: {
+          failureStreak: streak,
+          lastError: message.slice(0, 300),
+          lastUsedAt: new Date(),
+        },
+      });
+      if (streak >= 5) {
+        this.logger.warn(
+          `credential '${row.label}' (${row.providerId}) auto-disabled after ${streak} consecutive failures`,
+        );
+      }
     } catch {
       // best-effort
     }

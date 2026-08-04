@@ -1,8 +1,11 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   Param,
+  Patch,
+  Post,
   Query,
   Res,
   UseGuards,
@@ -14,6 +17,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RolesGuard } from '../auth/guards/roles.guard';
 import { clampInt } from '../common/num.util';
 import { StorageService } from './storage.service';
+import {
+  CreateStorageProviderDto,
+  UpdateStorageProviderDto,
+} from './dto/storage-provider.dto';
 
 @Controller('admin/storage')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -40,5 +47,62 @@ export class StorageController {
   @Delete('assets/:id')
   remove(@Param('id') id: string) {
     return this.storage.remove(id);
+  }
+
+  // ── Storage providers (backends / routes) ───────────────────────────────
+  @Get('providers')
+  async listProviders() {
+    const rows = await this.storage.listProviders();
+    return rows.map((p) => ({
+      ...p,
+      configEnc: undefined,
+      configConfigured: Boolean(p.configEnc),
+    }));
+  }
+
+  @Post('providers')
+  async createProvider(@Body() dto: CreateStorageProviderDto) {
+    const row = await this.storage.createProvider(dto);
+    return {
+      id: row.id,
+      name: row.name,
+      driver: row.driver,
+      enabled: row.enabled,
+      isActive: row.isActive,
+      priority: row.priority,
+      configConfigured: Boolean(row.configEnc),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  @Patch('providers/:id')
+  async updateProvider(
+    @Param('id') id: string,
+    @Body() dto: UpdateStorageProviderDto,
+  ) {
+    const row = await this.storage.updateProvider(id, dto);
+    return {
+      id: row.id,
+      name: row.name,
+      driver: row.driver,
+      enabled: row.enabled,
+      isActive: row.isActive,
+      priority: row.priority,
+      configConfigured: Boolean(row.configEnc),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  @Delete('providers/:id')
+  async deleteProvider(@Param('id') id: string) {
+    const removed = await this.storage.deleteProvider(id);
+    return { removed };
+  }
+
+  @Post('providers/:id/test')
+  testProvider(@Param('id') id: string) {
+    return this.storage.testProvider(id);
   }
 }

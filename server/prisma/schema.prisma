@@ -88,6 +88,7 @@ model AiProvider {
   usage        UsageRecord[]
   models       AiModel[]
   failoverRules RoutingRule[]
+  credentials  ProviderCredential[]
 }
 
 model AiModel {
@@ -117,6 +118,7 @@ model AiModel {
   updatedAt    DateTime @updatedAt
   variableRoutes RoutingVariableRoute[]
   failoverRules RoutingRule[]
+  capabilities ModelCapability[]
 
   @@unique([providerId, internalName])
   @@index([enabled, hidden])
@@ -210,26 +212,127 @@ model AuditLog {
 }
 
 /**
- * Pluggable tool registry — every node type that does real work maps to a
- * Tool row. Admin can enable/disable tools and change their default provider
- * binding without touching code. New tool kinds (background remover, upscaler,
- * video…) are added here, then matched by `key` in the execution engine.
+ * Capability registry — every AI tool / capability node maps to a row here.
+ * Admin can enable/disable capabilities, edit their default model chain and
+ * preview their typed ports without touching code. New capabilities are
+ * seeded, then matched by `key` in the execution engine; `hasRuntime` marks
+ * capabilities whose runtime handler exists (others appear in the Node
+ * Library but are disabled until an adapter is added).
  */
-model Tool {
+model Capability {
   id             String   @id @default(cuid())
-  key            String   @unique // image | icon | logo | object3d | video | backgroundRemover | upscaler | chat | ...
+  key            String   @unique // image | icon | logo | object3d | video | backgroundRemover | upscaler | textGeneration | ...
   name           String
-  category       String   @default("AI") // AI | Logic | Storage | System
+  kind           String   @default("capability") // capability | logic | storage | trigger | system
+  category       String   @default("AI") // AI | Logic | Storage | System | Canvas
   description    String?
   icon           String   @default("🧰")
   color          String   @default("bg-blue-500/15 text-blue-400 border-blue-500/30")
   capability     String   @default("image") // image | video | mask | audio | chat | text
-  requiresInput  Boolean  @default(false) // true when the tool consumes an uploaded file (e.g. background remover)
+  requiresInput  Boolean  @default(false) // true when the capability consumes an uploaded artifact
   enabled        Boolean  @default(true)
-  paramSchema    Json     @default("{}") // field definitions rendered in the admin properties panel
-  defaultBinding Json     @default("[]") // ordered [{ provider, model }] fallback steps
+  inputPorts     Json     @default("[]") // [{ id, label, dataType, required, accepts? }]
+  outputPorts    Json     @default("[]") // [{ id, label, dataType }]
+  paramSchema    Json     @default("{}") // field definitions rendered in the properties panel
+  defaults       Json     @default("{}") // default node config
+  hasRuntime     Boolean  @default(true) // false = registered but no runtime handler yet
+  defaultChain   Json     @default("[]") // ordered [{ provider, model }] fallback steps
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+/**
+ * Typed connection between a model and a capability. Backfilled from the
+ * provider/model capability flags on seed; admin can override per model.
+ */
+model ModelCapability {
+  id             String      @id @default(cuid())
+  modelId        String
+  model          AiModel     @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  capabilityKey  String
+  supported      Boolean     @default(true)
+  priority       Int         @default(0)
+  config         Json?
+  createdAt      DateTime    @default(now())
+
+  @@unique([modelId, capabilityKey])
+  @@index([capabilityKey])
+}
+
+/**
+ * Multiple encrypted credentials per provider — routing tries them by
+ * priority and rotates on failure before moving to another provider.
+ */
+model ProviderCredential {
+  id            String      @id @default(cuid())
+  providerId    String
+  provider      AiProvider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  label         String
+  apiKeyEnc     String // AES-256-GCM encrypted; never exposed to clients
+  enabled       Boolean     @default(true)
+  priority      Int         @default(0) // lower = tried first
+  failureStreak Int         @default(0)
+  lastUsedAt    DateTime?
+  lastError     String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  @@index([providerId, enabled, priority])
+}
+
+/**
+ * Named, reusable fallback route groups (Admin → Model Routes). A modelRoute
+ * canvas node can reference one of these or carry its own inline steps.
+ */
+model ModelRoute {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  steps       Json     @default("[]") // [{ provider, model, priority }]
+  retryPolicy Json     @default("{}") // { attempts, delayMs, backoff, retryableErrors }
+  enabled     Boolean  @default(true)
+  createdBy   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/**
+ * Static registry of non-capability node types (trigger, logic, storage,
+ * system, canvas) + the dynamic modelNode/modelRoute nodes. Served to the
+ * frontend so the Node Library is generated from the backend.
+ */
+model NodeDefinition {
+  id          String   @id @default(cuid())
+  key         String   @unique // trigger | retry | if | switch | wait | delay | storageNode | logger | modelNode | modelRoute | note | group
+  kind        String   @default("logic") // trigger | capability | logic | storage | system | canvas
+  category    String   @default("Logic") // Triggers | Logic | Storage | System | Canvas | Provider
+  name        String
+  description String?
+  icon        String   @default("🧩")
+  color       String   @default("bg-slate-500/15 text-slate-400 border-slate-500/30")
+  inputPorts  Json     @default("[]")
+  outputPorts Json     @default("[]")
+  paramSchema Json     @default("{}")
+  defaults    Json     @default("{}")
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+/**
+ * Storage backends (local | cloudinary | s3-compatible). The workflow only
+ * sees a storage node + route; the active provider is chosen here.
+ */
+model StorageProvider {
+  id         String   @id @default(cuid())
+  name       String
+  driver     String   @default("local") // local | cloudinary | s3 | r2 | supabase
+  configEnc  Json?    // encrypted credentials/config
+  enabled    Boolean  @default(true)
+  isActive   Boolean  @default(false)
+  priority   Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 /**
@@ -252,6 +355,7 @@ model StorageAsset {
   cloudinaryPublicId String? // cloudinary asset id for secure delete
   sizeBytes   Int                 @default(0)
   createdBy   String?
+  storageProviderId String?
   createdAt   DateTime            @default(now())
 
   @@index([createdAt])
@@ -263,6 +367,8 @@ model Workflow {
   name        String
   description String?
   graph       Json
+  draftGraph  Json?
+  status      String   @default("published") // draft | published
   enabled     Boolean  @default(true)
   version     Int      @default(1)
   projectId   String?
@@ -271,6 +377,21 @@ model Workflow {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   executions  WorkflowExecution[]
+  versions    WorkflowVersion[]
+}
+
+model WorkflowVersion {
+  id          String   @id @default(cuid())
+  workflowId  String
+  workflow    Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  version     Int
+  graph       Json
+  note        String?
+  createdBy   String?
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+
+  @@unique([workflowId, version])
 }
 
 model WorkflowExecution {
@@ -296,8 +417,55 @@ model WorkflowExecution {
   error      String?
   startedAt  DateTime @default(now())
   finishedAt DateTime?
+  cancelRequestedAt DateTime?
   assets     StorageAsset[]
+  steps      ExecutionStep[]
 
   @@index([workflowId, startedAt])
   @@index([projectId, startedAt])
+}
+
+/**
+ * Per-node execution record — the real trace of a workflow run, written by
+ * the execution engine and browsable from Admin → Executions / Logs.
+ */
+model ExecutionStep {
+  id           String             @id @default(cuid())
+  executionId  String
+  execution    WorkflowExecution  @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  nodeId       String
+  nodeType     String
+  nodeName     String?
+  status       String             @default("pending") // pending | running | success | failed | retrying | fallback | skipped | cancelled
+  attempts     Json               @default("[]") // [{attempt, provider, model, status, latencyMs, error, costUsd}]
+  latencyMs    Int                @default(0)
+  error        String?
+  provider     String?
+  model        String?
+  costUsd      Float              @default(0)
+  outputRefs   Json               @default("[]") // artifact ids / output summaries per output port
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime           @default(now())
+
+  @@index([executionId, nodeId])
+}
+
+/**
+ * Central error log — every engine / routing / storage / adapter failure is
+ * recorded here for the Admin → Logs & Errors page.
+ */
+model ErrorLog {
+  id          String   @id @default(cuid())
+  executionId String?
+  nodeId      String?
+  nodeType    String?
+  source      String   @default("engine") // engine | routing | storage | tools | admin
+  message     String
+  stack       String?
+  context     Json?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([executionId])
 }

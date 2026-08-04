@@ -33,7 +33,7 @@ export class ToolsController {
       color: body.color,
       enabled: body.enabled,
       paramSchema: body.paramSchema,
-      defaultBinding: body.defaultBinding,
+      defaultChain: body.defaultChain,
     });
     if (!updated) throw new NotFoundException(`Tool '${key}' not found`);
     return updated;

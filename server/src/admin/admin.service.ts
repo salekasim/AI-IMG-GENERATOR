@@ -14,6 +14,7 @@ import {
   CreateProviderModelDto,
   UpdateProviderModelDto,
 } from './dto/create-provider.dto';
+import { CreateCredentialDto, CreateRouteDto, UpdateRouteDto } from './dto/route.dto';
 import { UpdateProviderDto } from './dto/update-provider.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
@@ -203,6 +204,19 @@ export class AdminService {
             costPer1kOut: true,
           },
         },
+        credentials: {
+          orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+          select: {
+            id: true,
+            label: true,
+            enabled: true,
+            priority: true,
+            failureStreak: true,
+            lastUsedAt: true,
+            lastError: true,
+            apiKeyEnc: true,
+          },
+        },
       },
     });
     return providers.map((p) => ({
@@ -219,8 +233,19 @@ export class AdminService {
       healthStatus: p.healthStatus,
       failureStreak: p.failureStreak,
       apiKeyConfigured: !!p.apiKeyEnc,
-      models: p.models,
       apiKeyMasked: p.apiKeyEnc ? this.maskKey(p.apiKeyEnc) : null,
+      models: p.models,
+      credentials: p.credentials.map((c) => ({
+        id: c.id,
+        label: c.label,
+        enabled: c.enabled,
+        priority: c.priority,
+        failureStreak: c.failureStreak,
+        lastUsedAt: c.lastUsedAt,
+        lastError: c.lastError,
+        apiKeyConfigured: Boolean(c.apiKeyEnc),
+        apiKeyMasked: this.maskKey(c.apiKeyEnc),
+      })),
       updatedAt: p.updatedAt,
     }));
   }
@@ -404,16 +429,6 @@ export class AdminService {
     });
   }
 
-  private maskKey(encrypted: string): string {
-    try {
-      const key = this.crypto.decrypt(encrypted);
-      if (key.length <= 8) return '••••';
-      return `${key.slice(0, 4)}••••••••${key.slice(-4)}`;
-    } catch {
-      return '••••';
-    }
-  }
-
   async updateProvider(actorId: string, id: string, dto: UpdateProviderDto) {
     const existing = await this.prisma.aiProvider.findUnique({ where: { id } });
     if (!existing) {
@@ -493,7 +508,7 @@ export class AdminService {
         ? this.crypto.decrypt(provider.apiKeyEnc)
         : null;
       const headers: Record<string, string> = apiKey
-        ? { Authorization: `Bearer ${apiKey}` }
+        ? { Authorization: `${provider.name.startsWith('fal-') ? 'Key' : 'Bearer'} ${apiKey}` }
         : {};
       const response = await fetch(this.testUrl(provider), {
         headers,
@@ -526,8 +541,210 @@ export class AdminService {
         return `${base}/models`;
       case 'stability':
         return `${base}/v2beta/user`;
+      case 'fal-image':
+      case 'fal-video':
+        // queue root responds to an unauthenticated GET; the queue host serves
+        // the status/result endpoints under it.
+        return `${base}/requests/health`;
       default:
         return base;
+    }
+  }
+
+  // ── Model routes (fallback groups) ─────────────────────────────────────
+
+  listRoutes() {
+    return this.prisma.modelRoute.findMany({
+      orderBy: [{ enabled: 'desc' }, { updatedAt: 'desc' }],
+    });
+  }
+
+  async createRoute(actorId: string, dto: CreateRouteDto) {
+    const route = await this.prisma.modelRoute.create({
+      data: {
+        name: dto.name,
+        description: dto.description ?? null,
+        steps: (dto.steps ?? []) as unknown as Prisma.InputJsonValue,
+        retryPolicy: (dto.retryPolicy ?? {}) as unknown as Prisma.InputJsonValue,
+        enabled: true,
+        createdBy: actorId,
+      },
+    });
+    await this.audit.log(actorId, 'route.create', { id: route.id, name: route.name });
+    return route;
+  }
+
+  async updateRoute(actorId: string, id: string, dto: UpdateRouteDto) {
+    const existing = await this.prisma.modelRoute.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Model route not found');
+    const route = await this.prisma.modelRoute.update({
+      where: { id },
+      data: {
+        name: dto.name ?? existing.name,
+        description: dto.description !== undefined ? dto.description : existing.description,
+        steps: dto.steps !== undefined
+          ? (dto.steps as unknown as Prisma.InputJsonValue)
+          : (existing.steps as unknown as Prisma.InputJsonValue),
+        retryPolicy:
+          dto.retryPolicy !== undefined
+            ? (dto.retryPolicy as unknown as Prisma.InputJsonValue)
+            : (existing.retryPolicy as unknown as Prisma.InputJsonValue),
+        enabled: dto.enabled ?? existing.enabled,
+      },
+    });
+    await this.audit.log(actorId, 'route.update', { id: route.id, name: route.name });
+    return route;
+  }
+
+  async deleteRoute(actorId: string, id: string) {
+    const existing = await this.prisma.modelRoute.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('Model route not found');
+    await this.prisma.modelRoute.delete({ where: { id } });
+    await this.audit.log(actorId, 'route.delete', { id, name: existing.name });
+    return true;
+  }
+
+  // ── Provider credentials (key pool / rotation) ──────────────────────────
+
+  private async requireProvider(providerId: string) {
+    const provider = await this.prisma.aiProvider.findUnique({
+      where: { id: providerId },
+    });
+    if (!provider) throw new NotFoundException('Provider not found');
+    return provider;
+  }
+
+  private maskKey(encrypted: string): string {
+    try {
+      const plain = this.crypto.decrypt(encrypted);
+      if (!plain) return null as unknown as string;
+      const len = plain.length;
+      return len <= 8 ? '••••' : `${plain.slice(0, 4)}••••${plain.slice(-4)}`;
+    } catch {
+      return '••••';
+    }
+  }
+
+  async createCredential(actorId: string, providerId: string, dto: CreateCredentialDto) {
+    await this.requireProvider(providerId);
+    if (!dto.apiKey.trim()) {
+      throw new BadRequestException('API key is required');
+    }
+    const created = await this.prisma.providerCredential.create({
+      data: {
+        providerId,
+        label: dto.label.trim() || 'Default',
+        apiKeyEnc: this.crypto.encrypt(dto.apiKey),
+        enabled: dto.enabled ?? true,
+        priority: dto.priority ?? 0,
+      },
+    });
+    await this.audit.log(actorId, 'credential.create', {
+      providerId,
+      id: created.id,
+      label: created.label,
+    });
+    return {
+      id: created.id,
+      label: created.label,
+      enabled: created.enabled,
+      priority: created.priority,
+      apiKeyConfigured: true,
+      apiKeyMasked: this.maskKey(created.apiKeyEnc),
+    };
+  }
+
+  async updateCredential(
+    actorId: string,
+    providerId: string,
+    credentialId: string,
+    dto: {
+      label?: string;
+      enabled?: boolean;
+      priority?: number;
+      apiKey?: string;
+    },
+  ) {
+    const existing = await this.prisma.providerCredential.findFirst({
+      where: { id: credentialId, providerId },
+    });
+    if (!existing) throw new NotFoundException('Credential not found');
+    const updated = await this.prisma.providerCredential.update({
+      where: { id: credentialId },
+      data: {
+        label: dto.label !== undefined ? dto.label.trim() || 'Default' : existing.label,
+        enabled: dto.enabled ?? existing.enabled,
+        priority: dto.priority ?? existing.priority,
+        apiKeyEnc:
+          dto.apiKey && dto.apiKey.trim()
+            ? this.crypto.encrypt(dto.apiKey)
+            : existing.apiKeyEnc,
+        // Rotation resets the failure bookkeeping
+        failureStreak: dto.apiKey && dto.apiKey.trim() ? 0 : existing.failureStreak,
+        lastError: dto.apiKey && dto.apiKey.trim() ? null : existing.lastError,
+      },
+    });
+    await this.audit.log(actorId, 'credential.update', {
+      providerId,
+      id: credentialId,
+      label: updated.label,
+    });
+    return {
+      id: updated.id,
+      label: updated.label,
+      enabled: updated.enabled,
+      priority: updated.priority,
+      apiKeyConfigured: true,
+      apiKeyMasked: this.maskKey(updated.apiKeyEnc),
+    };
+  }
+
+  async deleteCredential(actorId: string, providerId: string, credentialId: string) {
+    const existing = await this.prisma.providerCredential.findFirst({
+      where: { id: credentialId, providerId },
+    });
+    if (!existing) throw new NotFoundException('Credential not found');
+    await this.prisma.providerCredential.delete({ where: { id: credentialId } });
+    await this.audit.log(actorId, 'credential.delete', {
+      providerId,
+      id: credentialId,
+      label: existing.label,
+    });
+    return true;
+  }
+
+  async testCredential(providerId: string, credentialId: string) {
+    const provider = await this.requireProvider(providerId);
+    const credential = await this.prisma.providerCredential.findFirst({
+      where: { id: credentialId, providerId },
+    });
+    if (!credential) throw new NotFoundException('Credential not found');
+    const startedAt = Date.now();
+    try {
+      const apiKey = this.crypto.decrypt(credential.apiKeyEnc);
+      const headers: Record<string, string> = {
+        Authorization: `${provider.name.startsWith('fal-') ? 'Key' : 'Bearer'} ${apiKey}`,
+      };
+      const response = await fetch(this.testUrl(provider), {
+        headers,
+        signal: AbortSignal.timeout(15000),
+      });
+      const latencyMs = Date.now() - startedAt;
+      return {
+        ok: response.ok,
+        latencyMs,
+        status: response.status,
+        message: response.ok
+          ? `Connected (HTTP ${response.status})`
+          : `HTTP ${response.status} ${(await response.text().catch(() => '')).slice(0, 200)}`.trim(),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        status: 0,
+        message: error instanceof Error ? error.message : 'Connection failed',
+      };
     }
   }
 

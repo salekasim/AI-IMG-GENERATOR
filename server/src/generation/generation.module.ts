@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ProvidersModule } from '../providers/providers.module';
 import { UsageModule } from '../usage/usage.module';
 import { UsersModule } from '../users/users.module';
+import { FalAdapter } from './adapters/fal.adapter';
 import { FireworksAdapter } from './adapters/fireworks.adapter';
 import { GeminiAdapter } from './adapters/gemini.adapter';
 import { OpenAIAdapter } from './adapters/openai.adapter';
@@ -26,6 +27,7 @@ import { GenerationService } from './generation.service';
     TogetherAdapter,
     FireworksAdapter,
     ReplicateAdapter,
+    FalAdapter,
   ],
 })
 export class GenerationModule {}

@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { AiProvider, Tool } from '@prisma/client';
+import { AiProvider, Capability } from '@prisma/client';
 import { CryptoService } from '../common/crypto.service';
 import { PlatformConfigService } from '../common/platform-config.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -10,14 +10,16 @@ import {
 } from '../orchestrator/execution/routing.service';
 import { ToolsService } from './tools.service';
 import { VideoAdapter } from './video.adapter';
+import { ChatAdapter } from '../orchestrator/execution/chat.adapter';
 
 export interface ToolOutputItem {
-  kind: 'image' | 'video' | 'file';
+  kind: 'image' | 'video' | 'file' | 'text';
   dataUrl?: string;
   url?: string;
   mime?: string;
   width?: number;
   height?: number;
+  text?: string;
 }
 
 export interface ToolRunResult {
@@ -27,6 +29,8 @@ export interface ToolRunResult {
   modelUsed: string | null;
   costUsd: number;
   attempts: RoutingAttempt[];
+  tokensIn?: number;
+  tokensOut?: number;
 }
 
 export interface ToolRunRequest {
@@ -64,6 +68,7 @@ export class ToolRunnerService {
     private readonly tools: ToolsService,
     private readonly routing: RoutingService,
     private readonly video: VideoAdapter,
+    private readonly chat: ChatAdapter,
     private readonly prisma: PrismaService,
     private readonly crypto: CryptoService,
     private readonly config: PlatformConfigService,
@@ -91,13 +96,28 @@ export class ToolRunnerService {
       case 'backgroundRemover':
       case 'upscaler':
         return this.runTransform(tool, req);
+      case 'textGeneration':
+        return this.runText(tool, req);
+      case 'summarization':
+        return this.runText(tool, req, {
+          systemPrompt:
+            'You are a summarization engine. Summarize the text the user provides, keeping the key facts. Respond with the summary only.',
+          maxTokens: 300,
+          temperature: 0.3,
+        });
+      case 'translation':
+        return this.runText(tool, req, {
+          systemPrompt: `You are a translation engine. Translate the text the user provides into ${String(req.config.targetLanguage ?? 'English')}. Respond with the translation only.`,
+          maxTokens: 600,
+          temperature: 0.2,
+        });
       default:
         throw new Error(`No runtime handler for tool '${req.toolKey}'`);
     }
   }
 
   private async resolveChain(
-    tool: Tool,
+    tool: Capability,
     req: ToolRunRequest,
   ): Promise<Array<{ provider: string; model: string }>> {
     const maxDepth = await this.config.getNumber('routing.maxChainDepth', 4);
@@ -178,7 +198,7 @@ export class ToolRunnerService {
   // ── Image family (image / icon / logo / object3d) ──────────────
 
   private async runImage(
-    tool: Tool,
+    tool: Capability,
     req: ToolRunRequest,
   ): Promise<ToolRunResult> {
     const chain = await this.resolveChain(tool, req);
@@ -236,7 +256,7 @@ export class ToolRunnerService {
   // ── Video ──────────────────────────────────────────────────────
 
   private async runVideo(
-    tool: Tool,
+    tool: Capability,
     req: ToolRunRequest,
   ): Promise<ToolRunResult> {
     const chain = await this.resolveChain(tool, req);
@@ -298,7 +318,13 @@ export class ToolRunnerService {
         `→ video attempt ${attemptNumber}: ${step.provider}/${step.model}`,
       );
       try {
-        const videoResult = await this.video.generate(row, {
+        // Use the provider's best credential (pool) when configured.
+        const best = await this.routing.bestCredentialFor(step.provider);
+        const rowForCall: AiProvider =
+          best.apiKeyEnc !== null && best.label !== null
+            ? { ...row, apiKeyEnc: best.apiKeyEnc }
+            : row;
+        const videoResult = await this.video.generate(rowForCall, {
           prompt,
           model: step.model,
           duration: Number(config.duration ?? 5),
@@ -308,7 +334,7 @@ export class ToolRunnerService {
         req.sink.log(
           'success',
           tool.name,
-          `✔ video via ${step.provider}/${step.model} in ${latencyMs}ms`,
+          `✔ video via ${step.provider}/${step.model} in ${latencyMs}ms${best.label ? ` via '${best.label}'` : ''}`,
         );
         return {
           tool: tool.key,
@@ -345,10 +371,114 @@ export class ToolRunnerService {
     );
   }
 
+  // ── Text runtimes (text generation / summarization / translation) ──
+
+  private async runText(
+    tool: Capability,
+    req: ToolRunRequest,
+    overrides?: { systemPrompt?: string; maxTokens?: number; temperature?: number },
+  ): Promise<ToolRunResult> {
+    const chain = await this.resolveChain(tool, req);
+    if (!chain.length) {
+      throw new Error(
+        `'${tool.name}' has no provider chain — bind a text-capable provider/model (e.g. Pollinations) in the node chain or tool default binding`,
+      );
+    }
+
+    const config = req.config;
+    const prompt = String(
+      req.payload.inputText ?? req.payload.prompt ?? config.prompt ?? '',
+    );
+    if (!prompt.trim()) {
+      throw new Error(`'${tool.name}' needs a prompt`);
+    }
+    const attempts: RoutingAttempt[] = [];
+    const lastErrors: string[] = [];
+
+    for (const step of chain) {
+      const attemptNumber = attempts.length + 1;
+      const row = await this.findProvider(step.provider);
+      if (!row || !row.enabled) {
+        attempts.push(
+          this.attempt(
+            step,
+            attemptNumber,
+            'skipped',
+            0,
+            `provider '${step.provider}' missing or disabled`,
+          ),
+        );
+        req.sink.log(
+          'warn',
+          tool.name,
+          `↷ skipped ${step.provider} (disabled)`,
+        );
+        continue;
+      }
+      const startedAt = Date.now();
+      req.sink.log(
+        'info',
+        tool.name,
+        `→ text attempt ${attemptNumber}: ${step.provider}/${step.model}`,
+      );
+      try {
+        const best = await this.routing.bestCredentialFor(step.provider);
+        const apiKey = best.apiKeyEnc ? this.crypto.decrypt(best.apiKeyEnc) : null;
+        const result = await this.chat.call({
+          provider: step.provider,
+          model: step.model,
+          prompt,
+          systemPrompt: overrides?.systemPrompt ?? (config.systemPrompt ? String(config.systemPrompt) : undefined),
+          temperature: Number(overrides?.temperature ?? config.temperature ?? 0.7),
+          maxTokens: Number(overrides?.maxTokens ?? config.maxTokens ?? 1024),
+          apiKey,
+        });
+        const latencyMs = Date.now() - startedAt;
+        attempts.push(this.attempt(step, attemptNumber, 'success', latencyMs));
+        req.sink.log(
+          'success',
+          tool.name,
+          `✔ text via ${step.provider}/${result.model} in ${latencyMs}ms (${result.tokensIn}+${result.tokensOut} tokens)`,
+        );
+        return {
+          tool: tool.key,
+          items: [{ kind: 'text', text: result.text }],
+          providerUsed: step.provider,
+          modelUsed: result.model,
+          costUsd: 0,
+          attempts,
+          tokensIn: result.tokensIn,
+          tokensOut: result.tokensOut,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        attempts.push(
+          this.attempt(
+            step,
+            attemptNumber,
+            'error',
+            Date.now() - startedAt,
+            message,
+          ),
+        );
+        req.sink.log(
+          'error',
+          tool.name,
+          `✗ ${step.provider}/${step.model}: ${message.slice(0, 200)}`,
+        );
+        lastErrors.push(message);
+      }
+    }
+
+    throw new Error(
+      `Text failed on all binding steps: ${(lastErrors.join(' | ') || 'no usable providers').slice(0, 300)}`,
+    );
+  }
+
   // ── Image transforms (background remover / upscaler) ───────────
 
   private async runTransform(
-    tool: Tool,
+    tool: Capability,
     req: ToolRunRequest,
   ): Promise<ToolRunResult> {
     const config = req.config;
@@ -413,7 +543,44 @@ export class ToolRunnerService {
           const detail = (await response.text().catch(() => '')).slice(0, 300);
           throw new Error(`Transform failed (${response.status}): ${detail}`);
         }
-        const data = await response.json();
+        // Read the body once — endpoints return JSON (replicate-style URLs) or
+        // raw image bytes (some image-capable providers) depending on the model.
+        const buffer = Buffer.from(await response.arrayBuffer());
+        let data: any = null;
+        try {
+          data = JSON.parse(buffer.toString('utf8'));
+        } catch {
+          const contentType =
+            response.headers.get('content-type') ?? 'image/png';
+          if (!contentType.toLowerCase().startsWith('image/')) {
+            throw new Error(
+              `Transform returned unparseable response (${contentType})`,
+            );
+          }
+          const latencyMs = Date.now() - startedAt;
+          attempts.push(
+            this.attempt(step, attemptNumber, 'success', latencyMs),
+          );
+          req.sink.log(
+            'success',
+            tool.name,
+            `✔ ${tool.name} via ${step.provider}/${step.model} in ${latencyMs}ms (inline image)`,
+          );
+          return {
+            tool: tool.key,
+            items: [
+              {
+                kind: 'image',
+                dataUrl: `data:${contentType};base64,${buffer.toString('base64')}`,
+                mime: contentType,
+              },
+            ],
+            providerUsed: step.provider,
+            modelUsed: step.model,
+            costUsd: 0,
+            attempts,
+          };
+        }
         const outputUrl = this.extractOutputUrl(data);
         const latencyMs = Date.now() - startedAt;
         attempts.push(this.attempt(step, attemptNumber, 'success', latencyMs));

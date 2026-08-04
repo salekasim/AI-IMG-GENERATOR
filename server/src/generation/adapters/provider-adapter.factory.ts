@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AiProvider } from '@prisma/client';
+import { FalAdapter } from './fal.adapter';
 import { FireworksAdapter } from './fireworks.adapter';
 import { GeminiAdapter } from './gemini.adapter';
 import { OpenAIAdapter } from './openai.adapter';
@@ -19,6 +20,7 @@ export class ProviderAdapterFactory {
     private readonly together: TogetherAdapter,
     private readonly fireworks: FireworksAdapter,
     private readonly replicate: ReplicateAdapter,
+    private readonly fal: FalAdapter,
   ) {}
 
   forProvider(provider: AiProvider): ProviderAdapter {
@@ -37,6 +39,8 @@ export class ProviderAdapterFactory {
         return this.fireworks;
       case 'replicate':
         return this.replicate;
+      case 'fal-image':
+        return this.fal;
       default:
         throw new Error(
           `No adapter registered for provider '${provider.name}'`,

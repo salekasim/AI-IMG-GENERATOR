@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -7,6 +8,8 @@ import {
 import { v2 as cloudinary } from 'cloudinary';
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { Prisma, StorageProvider } from '@prisma/client';
+import { CryptoService } from '../common/crypto.service';
 import { PlatformConfigService } from '../common/platform-config.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -22,6 +25,10 @@ export interface PersistAssetInput {
   buffer: Buffer;
   ext?: string;
   createdBy?: string | null;
+  /** Named StorageProvider route (from the storage node config). */
+  route?: string | null;
+  /** Folder / path override (from the storage node config). */
+  path?: string | null;
 }
 
 export interface PersistedAsset {
@@ -56,6 +63,7 @@ export class StorageService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: PlatformConfigService,
+    private readonly crypto: CryptoService,
   ) {}
 
   async onModuleInit() {
@@ -118,6 +126,240 @@ export class StorageService implements OnModuleInit {
     return configured ? configured : path.resolve(process.cwd(), 'uploads');
   }
 
+  // ------------------------------------------------------------ providers
+
+  private decryptProviderConfig(row: StorageProvider): Record<string, unknown> {
+    if (!row.configEnc) return {};
+    try {
+      return JSON.parse(
+        this.crypto.decrypt(String(row.configEnc)),
+      ) as Record<string, unknown>;
+    } catch {
+      this.logger.warn(
+        `storage provider '${row.name}' has an unreadable encrypted config`,
+      );
+      return {};
+    }
+  }
+
+  /**
+   * Resolve the storage backend for a persist call:
+   *  1. named route (storage node `storage` config), when enabled
+   *  2. the active enabled provider, else highest-priority enabled provider
+   *  3. legacy env/platform-config fallback (local | cloudinary | auto)
+   */
+  private async resolveStorage(route?: string | null): Promise<{
+    providerId: string | null;
+    driver: 'local' | 'cloudinary';
+    config: Record<string, unknown>;
+  }> {
+    let row: StorageProvider | null = null;
+    if (route && route.trim()) {
+      row = await this.prisma.storageProvider.findFirst({
+        where: { name: route.trim() },
+      });
+      if (row && !row.enabled) {
+        this.logger.warn(
+          `storage route '${row.name}' is disabled — falling back to active provider`,
+        );
+        row = null;
+      }
+    }
+    if (!row) {
+      row = await this.prisma.storageProvider.findFirst({
+        where: { enabled: true },
+        orderBy: [{ isActive: 'desc' }, { priority: 'asc' }],
+      });
+    }
+    if (row) {
+      const config = this.decryptProviderConfig(row);
+      if (row.driver === 'cloudinary') {
+        return { providerId: row.id, driver: 'cloudinary', config };
+      }
+      if (row.driver === 'local') {
+        return { providerId: row.id, driver: 'local', config };
+      }
+      throw new BadRequestException(
+        `Storage driver '${row.driver}' is not implemented (provider '${row.name}')`,
+      );
+    }
+    const driver = await this.resolveDriver();
+    return {
+      providerId: null,
+      driver: driver as 'local' | 'cloudinary',
+      config: {
+        cloudName: this.cloudinaryName(),
+        apiKey: process.env.CLOUDINARY_API_KEY ?? null,
+        apiSecret: process.env.CLOUDINARY_API_SECRET ?? null,
+        folder: process.env.CLOUDINARY_FOLDER ?? 'ai-img-generator',
+      },
+    };
+  }
+
+  listProviders() {
+    return this.prisma.storageProvider.findMany({
+      orderBy: [{ isActive: 'desc' }, { priority: 'asc' }],
+    });
+  }
+
+  async createProvider(dto: {
+    name: string;
+    driver: string;
+    config?: Record<string, unknown>;
+    enabled?: boolean;
+    isActive?: boolean;
+    priority?: number;
+  }) {
+    const existing = await this.prisma.storageProvider.findFirst({
+      where: { name: dto.name.trim() },
+    });
+    if (existing) {
+      throw new BadRequestException(
+        `Storage provider '${dto.name}' already exists`,
+      );
+    }
+    const configJson =
+      dto.config && Object.keys(dto.config).length
+        ? this.crypto.encrypt(JSON.stringify(dto.config))
+        : null;
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.isActive) {
+        await tx.storageProvider.updateMany({
+          where: { isActive: true },
+          data: { isActive: false },
+        });
+      }
+      return tx.storageProvider.create({
+        data: {
+          name: dto.name.trim(),
+          driver: dto.driver,
+          configEnc: (configJson ?? Prisma.JsonNull) as unknown as Prisma.InputJsonValue,
+          enabled: dto.enabled ?? true,
+          isActive: dto.isActive ?? false,
+          priority: dto.priority ?? 0,
+        },
+      });
+    });
+  }
+
+  async updateProvider(
+    id: string,
+    dto: {
+      name?: string;
+      config?: Record<string, unknown>;
+      enabled?: boolean;
+      isActive?: boolean;
+      priority?: number;
+    },
+  ) {
+    const existing = await this.prisma.storageProvider.findUnique({
+      where: { id },
+    });
+    if (!existing) throw new NotFoundException('Storage provider not found');
+    const data: Record<string, unknown> = {};
+    if (dto.name !== undefined) data.name = dto.name.trim();
+    if (dto.config !== undefined) {
+      data.configEnc = Object.keys(dto.config).length
+        ? this.crypto.encrypt(JSON.stringify(dto.config))
+        : null;
+    }
+    if (dto.enabled !== undefined) data.enabled = dto.enabled;
+    if (dto.priority !== undefined) data.priority = dto.priority;
+    if (dto.isActive !== undefined) data.isActive = dto.isActive;
+    return this.prisma.$transaction(async (tx) => {
+      if (dto.isActive) {
+        await tx.storageProvider.updateMany({
+          where: { isActive: true, id: { not: id } },
+          data: { isActive: false },
+        });
+      }
+      return tx.storageProvider.update({ where: { id }, data });
+    });
+  }
+
+  async deleteProvider(id: string) {
+    const existing = await this.prisma.storageProvider.findUnique({
+      where: { id },
+    });
+    if (!existing) throw new NotFoundException('Storage provider not found');
+    await this.prisma.$transaction(async (tx) => {
+      await tx.storageProvider.delete({ where: { id } });
+      if (existing.isActive) {
+        const next = await tx.storageProvider.findFirst({
+          where: { enabled: true },
+          orderBy: [{ isActive: 'desc' }, { priority: 'asc' }, { createdAt: 'asc' }],
+        });
+        if (next) {
+          await tx.storageProvider.update({
+            where: { id: next.id },
+            data: { isActive: true },
+          });
+          this.logger.log(
+            `Storage provider '${existing.name}' (active) deleted — promoted '${next.name}' to active`,
+          );
+        }
+      }
+    });
+    return true;
+  }
+
+  async testProvider(id: string) {
+    const row = await this.prisma.storageProvider.findUnique({
+      where: { id },
+    });
+    if (!row) throw new NotFoundException('Storage provider not found');
+    const config = this.decryptProviderConfig(row);
+    const startedAt = Date.now();
+    try {
+      if (row.driver === 'cloudinary') {
+        const { cloudName, apiKey, apiSecret } = config as {
+          cloudName?: string;
+          apiKey?: string;
+          apiSecret?: string;
+        };
+        if (!cloudName || !apiKey || !apiSecret) {
+          return {
+            ok: false,
+            latencyMs: Date.now() - startedAt,
+            message: 'cloudinary config is incomplete (cloudName/apiKey/apiSecret)',
+          };
+        }
+        cloudinary.config({
+          cloud_name: cloudName,
+          api_key: apiKey,
+          api_secret: apiSecret,
+          secure: true,
+        });
+        await cloudinary.api.ping();
+        return {
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          message: `cloudinary reachable (cloud '${cloudName}')`,
+        };
+      }
+      if (row.driver === 'local') {
+        const dir = String(config.path ?? '') || (await this.storageDir());
+        await fs.mkdir(dir, { recursive: true });
+        return {
+          ok: true,
+          latencyMs: Date.now() - startedAt,
+          message: `local directory writable (${dir})`,
+        };
+      }
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        message: `driver '${row.driver}' is not implemented`,
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        latencyMs: Date.now() - startedAt,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
   private safeName(ext: string): string {
     return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}${ext}`;
   }
@@ -164,12 +406,29 @@ export class StorageService implements OnModuleInit {
   }
 
   async persist(input: PersistAssetInput): Promise<PersistedAsset> {
-    const driver = await this.resolveDriver();
+    const { providerId, driver, config } = await this.resolveStorage(input.route);
 
     if (driver === 'cloudinary') {
-      this.configureCloudinary();
+      const { cloudName, apiKey, apiSecret } = config as {
+        cloudName?: string;
+        apiKey?: string;
+        apiSecret?: string;
+      };
+      if (cloudName && apiKey && apiSecret) {
+        cloudinary.config({
+          cloud_name: cloudName,
+          api_key: apiKey,
+          api_secret: apiSecret,
+          secure: true,
+        });
+      } else {
+        this.configureCloudinary();
+      }
       try {
-        const folder = await this.cloudinaryFolder();
+        const folder =
+          input.path?.trim() ||
+          String(config.folder ?? '') ||
+          (providerId ? 'ai-img-generator' : await this.cloudinaryFolder());
         const { publicId, secureUrl } = await this.uploadToCloudinary(
           input.buffer,
           folder,
@@ -188,12 +447,13 @@ export class StorageService implements OnModuleInit {
             mime: input.mime ?? null,
             url: secureUrl,
             cloudinaryPublicId: publicId,
+            storageProviderId: providerId,
             sizeBytes: input.buffer.length,
             createdBy: input.createdBy ?? null,
           },
         });
         this.logger.log(
-          `stored ${input.kind} asset ${asset.id} on cloudinary (${input.buffer.length} bytes)`,
+          `stored ${input.kind} asset ${asset.id} on cloudinary${providerId ? ` (${providerId})` : ''} (${input.buffer.length} bytes)`,
         );
         return {
           id: asset.id,
@@ -210,7 +470,9 @@ export class StorageService implements OnModuleInit {
       }
     }
 
-    const dir = await this.storageDir();
+    const dir =
+      String(config.path ?? '').trim() ||
+      (await this.storageDir());
     const ext = input.ext ?? (input.kind === 'image' ? '.png' : '.bin');
     const fileName = this.safeName(ext);
     const fullPath = path.join(dir, fileName);
@@ -234,13 +496,14 @@ export class StorageService implements OnModuleInit {
         kind: input.kind,
         mime: input.mime ?? null,
         localPath: fullPath,
+        storageProviderId: providerId,
         sizeBytes: input.buffer.length,
         createdBy: input.createdBy ?? null,
       },
     });
 
     this.logger.log(
-      `stored ${input.kind} asset ${asset.id} (${input.buffer.length} bytes)`,
+      `stored ${input.kind} asset ${asset.id}${providerId ? ` on ${providerId}` : ''} (${input.buffer.length} bytes)`,
     );
     return {
       id: asset.id,
