@@ -1006,8 +1006,8 @@ export class ExecutionEngine implements OnModuleInit {
           const routeId = String(config.routeId ?? '').trim();
           const upstream = this.bindingFor(id, ctx);
           if (routeId) {
-            const route = await this.prisma.modelRoute.findUnique({
-              where: { id: routeId },
+            const route = await this.prisma.modelRoute.findFirst({
+              where: { OR: [{ id: routeId }, { name: routeId }] },
             });
             if (route?.enabled) {
               ctx.bindings.set(id, { routeId });
@@ -1133,8 +1133,8 @@ export class ExecutionEngine implements OnModuleInit {
     if ('provider' in binding) {
       return [{ provider: binding.provider, model: binding.model }];
     }
-    const route = await this.prisma.modelRoute.findUnique({
-      where: { id: binding.routeId },
+    const route = await this.prisma.modelRoute.findFirst({
+      where: { OR: [{ id: binding.routeId }, { name: binding.routeId }] },
     });
     if (!route || !route.enabled) return [];
     const steps = Array.isArray(route.steps) ? route.steps : [];
